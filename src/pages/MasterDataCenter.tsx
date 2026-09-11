@@ -358,11 +358,11 @@ export const MasterDataCenter: React.FC = () => {
                     <td className="p-3.5">
                       <div className="font-mono text-slate-200 flex items-center gap-1 font-semibold">
                         <Smartphone size={12} className="text-emerald-400" />
-                        <span>+{lead.phone}</span>
+                        <span>{lead.phone ? `+${lead.phone}` : <span className="text-slate-500 font-sans font-normal italic text-[11px]">No phone</span>}</span>
                       </div>
                       <div className="text-[11px] text-slate-400 flex items-center gap-1">
                         <Mail size={12} className="text-blue-400" />
-                        <span>{lead.email || 'No email registered'}</span>
+                        <span>{lead.email || <span className="text-slate-500 italic">No email registered</span>}</span>
                       </div>
                     </td>
                     <td className="p-3.5">
@@ -458,7 +458,7 @@ export const MasterDataCenter: React.FC = () => {
                   {uploadFile ? uploadFile.name : 'Select CSV or Excel (.xlsx) file'}
                 </div>
                 <div className="text-[11px] text-slate-400 mt-1">
-                  Supported columns: Full Name, Phone, Email, Address, PAN, City
+                  Supported: Phone only, Email only, or Both. Columns: Full Name, Phone, Email, Address, PAN, City
                 </div>
                 <input
                   type="file"

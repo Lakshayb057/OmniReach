@@ -115,14 +115,18 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
 
             for (let i = 1; i < lines.length; i++) {
               const line = lines[i];
-              const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((c) => c.trim().replace(/^["']|["']$/g, ''));
-              const phone = phoneIdx !== -1 ? cols[phoneIdx] : '';
-              if (!phone) continue;
+              const cols = line.includes('"')
+                ? line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((c) => c.trim().replace(/^["']|["']$/g, ''))
+                : line.split(',').map((c) => c.trim());
+
+              const phone = phoneIdx !== -1 ? (cols[phoneIdx] || '') : '';
+              const email = emailIdx !== -1 ? (cols[emailIdx] || '') : '';
+              if (!phone && !email) continue;
 
               rawContacts.push({
                 name: (nameIdx !== -1 ? cols[nameIdx] : '') || 'Customer',
                 phone: String(phone),
-                email: (emailIdx !== -1 ? cols[emailIdx] : '') || '',
+                email: String(email),
                 address: (addressIdx !== -1 ? cols[addressIdx] : '') || '',
                 pan_no: (panIdx !== -1 ? cols[panIdx] : '') || '',
                 city: (cityIdx !== -1 ? cols[cityIdx] : '') || '',
@@ -141,14 +145,16 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
         const sheet = workbook.Sheets[firstSheetName];
         const jsonRows: any[] = xlsx.utils.sheet_to_json(sheet);
 
-        rawContacts = jsonRows.map((row) => ({
-          name: row['Full Name'] || row['Name'] || row['name'] || row['full_name'] || 'Customer',
-          phone: String(row['Phone'] || row['Contact'] || row['Mobile'] || row['phone'] || row['contact'] || ''),
-          email: row['Email'] || row['Mail'] || row['email'] || row['mail'] || '',
-          address: row['Address'] || row['City'] || row['address'] || '',
-          pan_no: row['PAN'] || row['pan_no'] || row['Pan Number'] || '',
-          city: row['City'] || row['city'] || '',
-        }));
+        rawContacts = jsonRows
+          .map((row) => ({
+            name: row['Full Name'] || row['Name'] || row['name'] || row['full_name'] || 'Customer',
+            phone: String(row['Phone'] || row['Contact'] || row['Mobile'] || row['phone'] || row['contact'] || ''),
+            email: String(row['Email'] || row['Mail'] || row['email'] || row['mail'] || ''),
+            address: row['Address'] || row['City'] || row['address'] || '',
+            pan_no: row['PAN'] || row['pan_no'] || row['Pan Number'] || '',
+            city: row['City'] || row['city'] || '',
+          }))
+          .filter((c) => c.phone || c.email);
       }
     } else if (req.body.contacts) {
       rawContacts = Array.isArray(req.body.contacts)

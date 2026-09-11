@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS campaign_master_leads (
     fmcb_id VARCHAR(50) UNIQUE NOT NULL,
     company_name VARCHAR(255) DEFAULT 'OmniReach Global',
     full_name VARCHAR(255) NOT NULL,
-    phone VARCHAR(30) NOT NULL,
+    phone VARCHAR(30),
     email VARCHAR(255),
     address TEXT,
     pan_no VARCHAR(20),
@@ -64,10 +64,11 @@ CREATE TABLE IF NOT EXISTS campaign_master_leads (
     last_broadcast_id UUID,
     last_contacted_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_master_leads_has_contact CHECK (phone IS NOT NULL OR email IS NOT NULL)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_master_leads_phone ON campaign_master_leads(phone);
-CREATE INDEX IF NOT EXISTS idx_master_leads_email ON campaign_master_leads(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_master_leads_phone ON campaign_master_leads(phone) WHERE phone IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_master_leads_email ON campaign_master_leads(LOWER(email)) WHERE email IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_master_leads_urn ON campaign_master_leads(urn);
 CREATE INDEX IF NOT EXISTS idx_master_leads_fmcb ON campaign_master_leads(fmcb_id);
 CREATE INDEX IF NOT EXISTS idx_master_leads_company ON campaign_master_leads(company_name);

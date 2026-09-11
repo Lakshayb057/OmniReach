@@ -183,7 +183,19 @@ export async function processBroadcast(broadcast: any) {
 
       // A. WhatsApp Channel Dispatch
       if (channel === 'whatsapp' || channel === 'both') {
-        if (!lead.whatsapp_optin) {
+        if (!lead.phone) {
+          if (channel === 'whatsapp') {
+            totalSuppressed++;
+            pendingLogs.push({
+              broadcast_id: broadcast.id,
+              master_lead_id: lead.id,
+              channel: 'whatsapp',
+              recipient: 'N/A',
+              status: 'suppressed',
+              error_message: 'Lead has no phone number recorded',
+            });
+          }
+        } else if (!lead.whatsapp_optin) {
           totalSuppressed++;
           pendingLogs.push({
             broadcast_id: broadcast.id,
@@ -298,7 +310,17 @@ export async function processBroadcast(broadcast: any) {
       // B. Email Channel Dispatch
       if (channel === 'email' || channel === 'both') {
         if (!lead.email) {
-          // No email provided
+          if (channel === 'email') {
+            totalSuppressed++;
+            pendingLogs.push({
+              broadcast_id: broadcast.id,
+              master_lead_id: lead.id,
+              channel: 'email',
+              recipient: 'N/A',
+              status: 'suppressed',
+              error_message: 'Lead has no email address recorded',
+            });
+          }
         } else if (!lead.email_optin) {
           totalSuppressed++;
           pendingLogs.push({
