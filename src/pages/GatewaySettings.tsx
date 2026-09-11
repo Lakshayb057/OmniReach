@@ -1687,17 +1687,17 @@ export const GatewaySettings: React.FC = () => {
                   <div className="grid grid-cols-2 gap-2 text-xs font-mono text-slate-200">
                     <div className="bg-[#0f172a] p-2.5 rounded-lg border border-slate-800 shadow-sm">
                       <span className="text-slate-500 text-[10px] block">Phone Number ID</span>
-                      <span>{gw.credentials?.phone_number_id || '109823475912345'}</span>
+                      <span>{gw.credentials?.phone_number_id || '—'}</span>
                     </div>
                     <div className="bg-[#0f172a] p-2.5 rounded-lg border border-slate-800 shadow-sm">
                       <span className="text-slate-500 text-[10px] block">WABA ID</span>
-                      <span>{gw.credentials?.waba_id || '89123471923841'}</span>
+                      <span>{gw.credentials?.waba_id || '—'}</span>
                     </div>
                   </div>
 
                   <div className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1.5 pt-1">
                     <CheckCircle2 size={13} />
-                    <span>Permanent System User Token Verified • Tier: 100,000 msgs/day</span>
+                    <span>Meta Cloud API Configured {gw.credentials?.messaging_limit_tier ? `• Tier: ${gw.credentials.messaging_limit_tier}` : ''}</span>
                   </div>
                 </div>
               ))}

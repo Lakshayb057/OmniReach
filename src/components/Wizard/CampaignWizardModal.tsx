@@ -364,7 +364,7 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
                   ? [{
                       id: currentWhatsAppGw.credentials.phone_number_id,
                       display_phone_number: currentWhatsAppGw.credentials.display_phone_number,
-                      verified_name: currentWhatsAppGw.credentials.verified_name || 'FinMantra',
+                      verified_name: currentWhatsAppGw.credentials.verified_name || 'Verified Sender',
                       quality_rating: currentWhatsAppGw.quality_rating || 'GREEN',
                       status: 'Connected',
                     }]

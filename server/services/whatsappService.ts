@@ -150,23 +150,6 @@ export async function sendWhatsAppMessage(
         err.message ||
         'Meta WhatsApp Cloud API delivery failed.';
 
-      const isTestOrPermissionError =
-        errData?.code === 100 ||
-        errData?.code === 190 ||
-        errData?.code === 200 ||
-        errData?.error_subcode === 33 ||
-        err.response?.status === 404;
-
-      if (isTestOrPermissionError) {
-        console.warn(`⚡ [Simulation Fallback] Meta API ID (${credentials.phone_number_id}) note: ${errorMsg}. Dispatched via OmniReach High-Speed Gateway Simulator.`);
-        const simMessageId = `wamid_sim_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-        return {
-          success: true,
-          messageId: simMessageId,
-          status: 'delivered',
-        };
-      }
-
       console.error(`❌ Meta Cloud API Send Error (${credentials.phone_number_id}): ${errorMsg}`);
       return {
         success: false,
@@ -176,13 +159,10 @@ export async function sendWhatsAppMessage(
     }
   }
 
-  // 3. HIGH-FIDELITY SIMULATION FALLBACK (SANDBOX / DEMO)
-  await new Promise((resolve) => setTimeout(resolve, 50));
-
-  const mockMessageId = `wamid_sim_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  // 3. No valid WhatsApp credentials configured
   return {
-    success: true,
-    messageId: mockMessageId,
-    status: 'delivered',
+    success: false,
+    error: 'No active WhatsApp gateway or valid Meta credentials configured for this company partition.',
+    status: 'failed',
   };
 }

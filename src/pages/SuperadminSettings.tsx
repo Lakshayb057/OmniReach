@@ -1356,7 +1356,7 @@ export const SuperadminSettings: React.FC = () => {
                                 type="text"
                                 value={creds.phone_number_id || ''}
                                 onChange={(e) => handleCredChange(gw.id, 'phone_number_id', e.target.value)}
-                                placeholder="e.g. 109823475912345"
+                                placeholder="e.g. 106728392019283"
                                 className="w-full px-3 py-2 bg-[#070b14] border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-cyan-500"
                               />
                             </div>
@@ -1367,7 +1367,7 @@ export const SuperadminSettings: React.FC = () => {
                                 type="text"
                                 value={creds.display_phone_number || ''}
                                 onChange={(e) => handleCredChange(gw.id, 'display_phone_number', e.target.value)}
-                                placeholder="e.g. +91 87968 19922"
+                                placeholder="e.g. +1 555 123 4567"
                                 className="w-full px-3 py-2 bg-[#070b14] border border-slate-800 rounded-xl text-white font-mono focus:outline-none focus:border-cyan-500"
                               />
                             </div>
@@ -1403,7 +1403,7 @@ export const SuperadminSettings: React.FC = () => {
                                 type="text"
                                 value={creds.verified_name || ''}
                                 onChange={(e) => handleCredChange(gw.id, 'verified_name', e.target.value)}
-                                placeholder="e.g. FinMantra"
+                                placeholder="e.g. Acme Enterprise"
                                 className="w-full px-3 py-2 bg-[#070b14] border border-slate-800 rounded-xl text-white focus:outline-none focus:border-cyan-500"
                               />
                             </div>
@@ -1416,7 +1416,7 @@ export const SuperadminSettings: React.FC = () => {
                                 <Smartphone size={15} className="text-emerald-400" />
                                 <h4 className="text-xs font-bold text-white">Connected WhatsApp Manager Phone Numbers</h4>
                                 <span className="text-[10px] text-slate-400">
-                                  ({(creds.phone_numbers || []).length || 1} sender lines connected)
+                                  ({(creds.phone_numbers && creds.phone_numbers.length > 0 ? creds.phone_numbers.length : (creds.display_phone_number ? 1 : 0))} sender line(s) connected)
                                 </span>
                               </div>
                               <button
@@ -1443,106 +1443,122 @@ export const SuperadminSettings: React.FC = () => {
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-800/60">
-                                  {(creds.phone_numbers && creds.phone_numbers.length > 0 ? creds.phone_numbers : [
-                                    {
-                                      id: creds.phone_number_id || '109823475919922',
-                                      display_phone_number: creds.display_phone_number || '+91 87968 19922',
-                                      verified_name: creds.verified_name || 'FinMantra',
-                                      status: 'Connected',
-                                      quality_rating: creds.quality_rating || 'GREEN',
-                                      country: 'India',
+                                  {(() => {
+                                    const senderList = (creds.phone_numbers && creds.phone_numbers.length > 0)
+                                      ? creds.phone_numbers
+                                      : (creds.phone_number_id && creds.display_phone_number)
+                                      ? [{
+                                          id: creds.phone_number_id,
+                                          display_phone_number: creds.display_phone_number,
+                                          verified_name: creds.verified_name || 'Primary Sender',
+                                          status: creds.status || 'Connected',
+                                          quality_rating: creds.quality_rating || 'GREEN',
+                                          country: 'Connected',
+                                        }]
+                                      : [];
+
+                                    if (senderList.length === 0) {
+                                      return (
+                                        <tr>
+                                          <td colSpan={6} className="p-4 text-center text-slate-500 text-xs">
+                                            No WhatsApp sender numbers connected. Enter your System User Permanent Token above and click &quot;Discover &amp; Traverse Meta Cloud API&quot; or save gateway.
+                                          </td>
+                                        </tr>
+                                      );
                                     }
-                                  ]).map((pn: any, pIdx: number) => {
-                                    const isSelectedPrimary = (creds.phone_number_id === pn.id) || (!creds.phone_number_id && pIdx === 0);
-                                    return (
-                                      <tr key={pn.id || pIdx} className={`hover:bg-[#0c1322]/50 ${isSelectedPrimary ? 'bg-emerald-500/5' : ''}`}>
-                                        <td className="p-2.5 font-mono font-bold text-white flex items-center gap-2">
-                                          <div className="w-6 h-6 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 text-[10px]">
-                                            <Smartphone size={12} />
-                                          </div>
-                                          <div>
-                                            <div>{pn.display_phone_number}</div>
-                                            <div className="text-[10px] text-slate-500 font-sans">{pn.country || 'India'}</div>
-                                          </div>
-                                        </td>
-                                        <td className="p-2.5">
-                                          <div className="font-bold text-slate-200">{pn.verified_name}</div>
-                                          <div className="text-[10px] text-slate-500">Name visible to customers</div>
-                                        </td>
-                                        <td className="p-2.5">
-                                          <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold border flex items-center gap-1.5 w-fit ${
-                                            pn.status?.toLowerCase().includes('flag') || pn.status?.toLowerCase().includes('spam')
-                                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                                              : pn.status?.toLowerCase().includes('restrict')
-                                              ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
-                                              : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
-                                          }`}>
-                                            <span className={`w-1.5 h-1.5 rounded-full ${
-                                              pn.status?.toLowerCase().includes('flag')
-                                                ? 'bg-amber-400'
+
+                                    return senderList.map((pn: any, pIdx: number) => {
+                                      const isSelectedPrimary = (creds.phone_number_id === pn.id) || (!creds.phone_number_id && pIdx === 0);
+                                      return (
+                                        <tr key={pn.id || pIdx} className={`hover:bg-[#0c1322]/50 ${isSelectedPrimary ? 'bg-emerald-500/5' : ''}`}>
+                                          <td className="p-2.5 font-mono font-bold text-white flex items-center gap-2">
+                                            <div className="w-6 h-6 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 text-[10px]">
+                                              <Smartphone size={12} />
+                                            </div>
+                                            <div>
+                                              <div>{pn.display_phone_number}</div>
+                                              <div className="text-[10px] text-slate-500 font-sans">{pn.country || 'India'}</div>
+                                            </div>
+                                          </td>
+                                          <td className="p-2.5">
+                                            <div className="font-bold text-slate-200">{pn.verified_name}</div>
+                                            <div className="text-[10px] text-slate-500">Name visible to customers</div>
+                                          </td>
+                                          <td className="p-2.5">
+                                            <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold border flex items-center gap-1.5 w-fit ${
+                                              pn.status?.toLowerCase().includes('flag') || pn.status?.toLowerCase().includes('spam')
+                                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                                                 : pn.status?.toLowerCase().includes('restrict')
-                                                ? 'bg-rose-400'
-                                                : 'bg-emerald-400 animate-pulse'
-                                            }`}></span>
-                                            <span>{pn.status || 'Connected'}</span>
-                                          </span>
-                                        </td>
-                                        <td className="p-2.5">
-                                          <span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold border flex items-center gap-1.5 w-fit ${
-                                            pn.quality_rating === 'GREEN'
-                                              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
-                                              : pn.quality_rating === 'YELLOW'
-                                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                                              : pn.quality_rating === 'RED'
-                                              ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
-                                              : 'bg-slate-800 text-slate-400 border-slate-700'
-                                          }`}>
-                                            <span className={`w-1.5 h-1.5 rounded-full ${
+                                                ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
+                                                : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
+                                            }`}>
+                                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                                pn.status?.toLowerCase().includes('flag')
+                                                  ? 'bg-amber-400'
+                                                  : pn.status?.toLowerCase().includes('restrict')
+                                                  ? 'bg-rose-400'
+                                                  : 'bg-emerald-400 animate-pulse'
+                                              }`}></span>
+                                              <span>{pn.status || 'Connected'}</span>
+                                            </span>
+                                          </td>
+                                          <td className="p-2.5">
+                                            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold border flex items-center gap-1.5 w-fit ${
                                               pn.quality_rating === 'GREEN'
-                                                ? 'bg-emerald-400'
+                                                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40'
                                                 : pn.quality_rating === 'YELLOW'
-                                                ? 'bg-amber-400'
+                                                ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
                                                 : pn.quality_rating === 'RED'
-                                                ? 'bg-rose-400'
-                                                : 'bg-slate-400'
-                                            }`}></span>
-                                            <span>
-                                              {pn.quality_rating === 'GREEN'
-                                                ? 'GREEN (High)'
-                                                : pn.quality_rating === 'YELLOW'
-                                                ? 'YELLOW (Medium)'
-                                                : pn.quality_rating === 'RED'
-                                                ? 'RED (Low Quality)'
-                                                : 'UNKNOWN'}
+                                                ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
+                                                : 'bg-slate-800 text-slate-400 border-slate-700'
+                                            }`}>
+                                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                                pn.quality_rating === 'GREEN'
+                                                  ? 'bg-emerald-400'
+                                                  : pn.quality_rating === 'YELLOW'
+                                                  ? 'bg-amber-400'
+                                                  : pn.quality_rating === 'RED'
+                                                  ? 'bg-rose-400'
+                                                  : 'bg-slate-400'
+                                              }`}></span>
+                                              <span>
+                                                {pn.quality_rating === 'GREEN'
+                                                  ? 'GREEN (High)'
+                                                  : pn.quality_rating === 'YELLOW'
+                                                  ? 'YELLOW (Medium)'
+                                                  : pn.quality_rating === 'RED'
+                                                  ? 'RED (Low Quality)'
+                                                  : 'UNKNOWN'}
+                                              </span>
                                             </span>
-                                          </span>
-                                        </td>
-                                        <td className="p-2.5 font-mono text-slate-400 text-[11px]">
-                                          {pn.id}
-                                        </td>
-                                        <td className="p-2.5 text-right">
-                                          {isSelectedPrimary ? (
-                                            <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold">
-                                              ✓ Default Sender
-                                            </span>
-                                          ) : (
-                                            <button
-                                              type="button"
-                                              onClick={() => {
-                                                handleCredChange(gw.id, 'phone_number_id', pn.id);
-                                                handleCredChange(gw.id, 'display_phone_number', pn.display_phone_number);
-                                                handleCredChange(gw.id, 'verified_name', pn.verified_name);
-                                                handleCredChange(gw.id, 'quality_rating', pn.quality_rating || 'GREEN');
-                                              }}
-                                              className="px-2.5 py-1 rounded-lg bg-[#0c1322] hover:bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-bold cursor-pointer"
-                                            >
-                                              Set Default
-                                            </button>
-                                          )}
-                                        </td>
-                                      </tr>
-                                    );
-                                  })}
+                                          </td>
+                                          <td className="p-2.5 font-mono text-slate-400 text-[11px]">
+                                            {pn.id}
+                                          </td>
+                                          <td className="p-2.5 text-right">
+                                            {isSelectedPrimary ? (
+                                              <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold">
+                                                ✓ Default Sender
+                                              </span>
+                                            ) : (
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  handleCredChange(gw.id, 'phone_number_id', pn.id);
+                                                  handleCredChange(gw.id, 'display_phone_number', pn.display_phone_number);
+                                                  handleCredChange(gw.id, 'verified_name', pn.verified_name);
+                                                  handleCredChange(gw.id, 'quality_rating', pn.quality_rating || 'GREEN');
+                                                }}
+                                                className="px-2.5 py-1 rounded-lg bg-[#0c1322] hover:bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-bold cursor-pointer"
+                                              >
+                                                Set Default
+                                              </button>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    });
+                                  })()}
                                 </tbody>
                               </table>
                             </div>
@@ -2705,7 +2721,7 @@ export const SuperadminSettings: React.FC = () => {
                         type="text"
                         value={newGwCreds.business_id || ''}
                         onChange={(e) => setNewGwCreds({ ...newGwCreds, business_id: e.target.value })}
-                        placeholder="e.g. 1520717..."
+                        placeholder="e.g. 1029384..."
                         className="w-full px-3 py-2 bg-[#0c1322] border border-slate-800 rounded-xl text-white font-mono text-xs"
                       />
                     </div>
@@ -2715,7 +2731,7 @@ export const SuperadminSettings: React.FC = () => {
                         type="text"
                         value={newGwCreds.waba_id || ''}
                         onChange={(e) => setNewGwCreds({ ...newGwCreds, waba_id: e.target.value })}
-                        placeholder="8912347..."
+                        placeholder="e.g. 8912347..."
                         className="w-full px-3 py-2 bg-[#0c1322] border border-slate-800 rounded-xl text-white font-mono text-xs"
                       />
                     </div>
@@ -2725,7 +2741,7 @@ export const SuperadminSettings: React.FC = () => {
                         type="text"
                         value={newGwCreds.phone_number_id || ''}
                         onChange={(e) => setNewGwCreds({ ...newGwCreds, phone_number_id: e.target.value })}
-                        placeholder="1098234759..."
+                        placeholder="e.g. 1067283..."
                         className="w-full px-3 py-2 bg-[#0c1322] border border-slate-800 rounded-xl text-white font-mono text-xs"
                       />
                     </div>
@@ -2738,7 +2754,7 @@ export const SuperadminSettings: React.FC = () => {
                         type="text"
                         value={newGwCreds.display_phone_number || ''}
                         onChange={(e) => setNewGwCreds({ ...newGwCreds, display_phone_number: e.target.value })}
-                        placeholder="+91 87968 19922"
+                        placeholder="e.g. +1 555 123 4567"
                         className="w-full px-3 py-2 bg-[#0c1322] border border-slate-800 rounded-xl text-white font-mono text-xs"
                       />
                     </div>
@@ -2748,7 +2764,7 @@ export const SuperadminSettings: React.FC = () => {
                         type="text"
                         value={newGwCreds.verified_name || ''}
                         onChange={(e) => setNewGwCreds({ ...newGwCreds, verified_name: e.target.value })}
-                        placeholder="FinMantra"
+                        placeholder="e.g. Acme Enterprise"
                         className="w-full px-3 py-2 bg-[#0c1322] border border-slate-800 rounded-xl text-white text-xs"
                       />
                     </div>
