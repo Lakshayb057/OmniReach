@@ -1,0 +1,488 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-main: #050811;
+    --bg-card: #0c1322;
+    --bg-surface: #080d1a;
+    --bg-elevated: #0f172a;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --border-main: rgba(255, 255, 255, 0.08);
+  }
+
+  html.light {
+    --bg-main: #f8fafc;
+    --bg-card: #ffffff;
+    --bg-surface: #f1f5f9;
+    --bg-elevated: #ffffff;
+    --text-main: #0f172a;
+    --text-muted: #475569;
+    --border-main: rgba(0, 0, 0, 0.08);
+  }
+
+  html.dark {
+    --bg-main: #050811;
+    --bg-card: #0c1322;
+    --bg-surface: #080d1a;
+    --bg-elevated: #0f172a;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --border-main: rgba(255, 255, 255, 0.08);
+  }
+
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background-color: var(--bg-main);
+    color: var(--text-main);
+    transition: background-color 0.25s ease, color 0.25s ease;
+  }
+  
+  code, pre {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Light / Dark Mode Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-main);
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+html.light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #38bdf8;
+}
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: #60a5fa;
+}
+
+/* Modern AI Tech Glassmorphism & Cybernetic Panels */
+.glass-ai {
+  background: rgba(12, 19, 34, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+}
+
+html.light .glass-ai {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.06);
+}
+
+.glass-ai-hover {
+  background: rgba(12, 19, 34, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(59, 130, 246, 0.18);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.glass-ai-hover:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+  box-shadow: 0 12px 40px -5px rgba(56, 189, 248, 0.15), 0 0 20px rgba(59, 130, 246, 0.1);
+  transform: translateY(-2px);
+}
+
+html.light .glass-ai-hover {
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.05);
+}
+html.light .glass-ai-hover:hover {
+  border-color: #6366f1;
+  box-shadow: 0 12px 30px rgba(99, 102, 241, 0.12);
+  transform: translateY(-2px);
+}
+
+.glass-ai-cyan {
+  background: rgba(8, 14, 28, 0.88);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  box-shadow: 0 8px 32px 0 rgba(6, 182, 212, 0.12);
+}
+
+html.light .glass-ai-cyan {
+  background: rgba(240, 253, 250, 0.95);
+  border: 1px solid rgba(20, 184, 166, 0.3);
+  box-shadow: 0 8px 24px rgba(20, 184, 166, 0.08);
+}
+
+.glass-ai-purple {
+  background: rgba(10, 14, 28, 0.88);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  box-shadow: 0 8px 32px 0 rgba(139, 92, 246, 0.12);
+}
+
+html.light .glass-ai-purple {
+  background: rgba(245, 243, 255, 0.95);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.08);
+}
+
+/* AI Neon Gradients & Cyber Buttons */
+.ai-gradient-btn {
+  background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 50%, #6366f1 100%);
+  color: #ffffff !important;
+  box-shadow: 0 4px 20px 0 rgba(6, 182, 212, 0.35);
+  transition: all 0.2s ease-in-out;
+}
+.ai-gradient-btn:hover {
+  background: linear-gradient(135deg, #0891b2 0%, #2563eb 50%, #4f46e5 100%);
+  box-shadow: 0 6px 28px 0 rgba(6, 182, 212, 0.5);
+  transform: translateY(-1px);
+}
+.ai-gradient-btn:active {
+  transform: translateY(0);
+}
+
+/* =========================================================================
+   COMPREHENSIVE LIGHT & DARK THEME ENGINE (High-Contrast, Pixel-Perfect UI)
+   ========================================================================= */
+
+/* 1. Page, Container & Card Background Overrides */
+html.light,
+html.light body,
+html.light #root,
+html.light .bg-\[\#02050c\],
+html.light .bg-\[\#03060f\],
+html.light .bg-\[\#040814\],
+html.light .bg-\[\#050811\],
+html.light .bg-\[\#070b14\] {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+}
+
+html.light aside,
+html.light .bg-\[\#060b17\],
+html.light .bg-\[\#070d1d\],
+html.light .bg-\[\#070d1e\],
+html.light .bg-\[\#070c18\],
+html.light .bg-\[\#080d1a\],
+html.light .bg-\[\#080d1a\]\/85,
+html.light .bg-\[\#091024\],
+html.light .bg-\[\#0b0f19\],
+html.light .bg-\[\#0b141a\],
+html.light .bg-\[\#0c1322\],
+html.light .bg-\[\#0c1428\],
+html.light .bg-\[\#0c172e\],
+html.light .bg-\[\#0c1933\],
+html.light .bg-\[\#0d162d\],
+html.light .bg-\[\#0f1226\],
+html.light .bg-\[\#0f172a\],
+html.light .bg-\[\#121f3d\],
+html.light .bg-\[\#131d33\],
+html.light .bg-\[\#182229\],
+html.light .bg-\[\#1f2c34\],
+html.light .bg-slate-900,
+html.light .bg-slate-950 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Light Mode Card & Header Gradients */
+html.light div.bg-gradient-to-r,
+html.light div.bg-gradient-to-tr,
+html.light div.bg-gradient-to-br,
+html.light div.bg-gradient-to-b {
+  background-image: linear-gradient(135deg, #ffffff 0%, #f1f5f9 50%, #e2e8f0 100%) !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light .bg-\[\#070b14\]\/50,
+html.light .bg-\[\#070b14\]\/80,
+html.light .bg-\[\#0c1322\]\/50 {
+  background-color: #f1f5f9 !important;
+}
+
+html.light .bg-black\/75,
+html.light .bg-black\/80,
+html.light .bg-black\/90 {
+  background-color: rgba(15, 23, 42, 0.65) !important;
+  backdrop-filter: blur(8px);
+}
+
+/* 2. Text Color Overrides for High Contrast Readability */
+html.light .text-white:not(.text-white-force) {
+  color: #0f172a !important;
+}
+html.light .text-slate-100 {
+  color: #0f172a !important;
+}
+html.light .text-slate-200 {
+  color: #1e293b !important;
+}
+html.light .text-slate-300 {
+  color: #334155 !important;
+}
+html.light .text-slate-400 {
+  color: #475569 !important;
+}
+html.light .text-slate-500 {
+  color: #64748b !important;
+}
+
+/* Light Mode Badges & Accent Pills */
+html.light .text-cyan-300,
+html.light .text-cyan-400 {
+  color: #0284c7 !important;
+}
+html.light .bg-cyan-500\/10,
+html.light .bg-cyan-500\/15,
+html.light .bg-cyan-500\/20 {
+  background-color: #e0f2fe !important;
+  border-color: #7dd3fc !important;
+}
+
+html.light .text-emerald-300,
+html.light .text-emerald-400 {
+  color: #059669 !important;
+}
+html.light .bg-emerald-500\/10,
+html.light .bg-emerald-500\/15,
+html.light .bg-emerald-500\/20 {
+  background-color: #d1fae5 !important;
+  border-color: #6ee7b7 !important;
+}
+
+html.light .text-amber-300,
+html.light .text-amber-400 {
+  color: #b45309 !important;
+}
+html.light .bg-amber-500\/10,
+html.light .bg-amber-500\/15,
+html.light .bg-amber-500\/20 {
+  background-color: #fef3c7 !important;
+  border-color: #fcd34d !important;
+}
+
+html.light .text-purple-300,
+html.light .text-purple-400 {
+  color: #7c3aed !important;
+}
+html.light .bg-purple-500\/10,
+html.light .bg-purple-500\/15,
+html.light .bg-purple-500\/20 {
+  background-color: #f3e8ff !important;
+  border-color: #d8b4fe !important;
+}
+
+html.light .text-blue-300,
+html.light .text-blue-400 {
+  color: #2563eb !important;
+}
+html.light .bg-blue-500\/10,
+html.light .bg-blue-500\/15,
+html.light .bg-blue-500\/20 {
+  background-color: #dbeafe !important;
+  border-color: #93c5fd !important;
+}
+
+html.light .text-rose-300,
+html.light .text-rose-400 {
+  color: #e11d48 !important;
+}
+html.light .bg-rose-500\/10,
+html.light .bg-rose-500\/15,
+html.light .bg-rose-500\/20 {
+  background-color: #ffe4e6 !important;
+  border-color: #fda4af !important;
+}
+
+/* Exceptions: Preserve white text inside solid colored primary buttons & badges */
+html.light button.bg-gradient-to-r,
+html.light button.bg-gradient-to-tr,
+html.light button.ai-gradient-btn,
+html.light a.bg-gradient-to-r,
+html.light button.bg-gradient-to-r *,
+html.light button.bg-gradient-to-tr *,
+html.light a.bg-gradient-to-r *,
+html.light .bg-blue-600,
+html.light .bg-blue-600 *,
+html.light .bg-indigo-600,
+html.light .bg-indigo-600 *,
+html.light .bg-emerald-600,
+html.light .bg-emerald-600 *,
+html.light .bg-rose-600,
+html.light .bg-rose-600 * {
+  color: #ffffff !important;
+}
+
+/* 3. Border Overrides */
+html.light .border-slate-800,
+html.light .border-slate-800\/80,
+html.light .border-slate-800\/90,
+html.light .border-slate-800\/60,
+html.light .border-slate-700,
+html.light .border-slate-700\/80,
+html.light .border-white\/10,
+html.light .border-white\/15,
+html.light .border-white\/20 {
+  border-color: #e2e8f0 !important;
+}
+
+/* 4. Inputs, Selects & Textareas in Light Mode */
+html.light input:not([type="checkbox"]):not([type="radio"]),
+html.light textarea,
+html.light select {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+html.light input:read-only,
+html.light textarea:read-only {
+  background-color: #f8fafc !important;
+  color: #334155 !important;
+  border-color: #e2e8f0 !important;
+}
+html.light input::placeholder,
+html.light textarea::placeholder {
+  color: #94a3b8 !important;
+}
+html.light select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* 5. Tables & Active Nav in Light Mode */
+html.light thead,
+html.light .bg-\[\#070b14\] {
+  background-color: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+}
+html.light thead th {
+  color: #475569 !important;
+  font-weight: 700 !important;
+  background-color: #f1f5f9 !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+html.light tbody tr {
+  border-color: #f1f5f9 !important;
+}
+html.light tbody tr:hover {
+  background-color: #f8fafc !important;
+}
+html.light .divide-slate-800\/80 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #f1f5f9 !important;
+}
+
+/* Company Badges & Neutral Pills */
+html.light span.bg-slate-800,
+html.light div.bg-slate-800,
+html.light .bg-slate-800 {
+  background-color: #f1f5f9 !important;
+  color: #334155 !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Table Stats Numbers */
+html.light .font-mono.text-emerald-400,
+html.light .font-bold.text-emerald-400 {
+  color: #059669 !important;
+}
+html.light .font-mono.text-amber-400,
+html.light .font-bold.text-amber-400,
+html.light .font-semibold.text-amber-400 {
+  color: #d97706 !important;
+}
+html.light .font-mono.text-blue-400,
+html.light .font-bold.text-blue-400,
+html.light .font-semibold.text-blue-400 {
+  color: #2563eb !important;
+}
+html.light .font-mono.text-cyan-400,
+html.light .font-bold.text-cyan-400 {
+  color: #0284c7 !important;
+}
+html.light .font-mono.text-purple-400,
+html.light .font-bold.text-purple-400 {
+  color: #7c3aed !important;
+}
+
+/* Templates Studio & Cards */
+html.light div.bg-blue-600\/15 {
+  background-color: #eff6ff !important;
+  border-color: #3b82f6 !important;
+}
+html.light nav a.bg-blue-600\/15 {
+  background-color: #eff6ff !important;
+  color: #1d4ed8 !important;
+  border-color: #bfdbfe !important;
+}
+
+/* 6. Live Simulator Previews in Light Mode */
+html.light .border-slate-950 {
+  border-color: #1e293b !important;
+}
+html.light .bg-\[\#0b141a\] {
+  background-color: #efeae2 !important;
+}
+html.light .bg-\[\#1f2c34\] {
+  background-color: #075e54 !important;
+  color: #ffffff !important;
+}
+html.light .bg-\[\#1f2c34\] * {
+  color: #ffffff !important;
+}
+html.light .bg-\[\#005c4b\] {
+  background-color: #d9fdd3 !important;
+  color: #111b21 !important;
+}
+html.light .bg-\[\#005c4b\] * {
+  color: #111b21 !important;
+}
+html.light .bg-\[\#182229\] {
+  background-color: #fff9c4 !important;
+  color: #795548 !important;
+  border-color: #ffe082 !important;
+}
+
+/* 7. Light Mode Shadows */
+html.light .shadow-2xl,
+html.light .shadow-xl {
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.06), 0 4px 12px -2px rgba(0, 0, 0, 0.03) !important;
+}
+
+/* Glowing Pulse Keyframes */
+@keyframes ai-pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(6, 182, 212, 0.25), inset 0 0 10px rgba(6, 182, 212, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(6, 182, 212, 0.5), inset 0 0 20px rgba(6, 182, 212, 0.2);
+  }
+}
+
+.animate-ai-glow {
+  animation: ai-pulse-glow 3s infinite;
+}
+
+@keyframes neural-orbit {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.animate-neural-orbit {
+  animation: neural-orbit 20s linear infinite;
+}
