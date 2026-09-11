@@ -13,9 +13,10 @@ export interface AuthenticatedUser {
   permissions: Record<string, any>;
 }
 
-export interface AuthenticatedRequest extends Request {
+export type AuthenticatedRequest = Request & {
   user?: AuthenticatedUser;
-}
+  [key: string]: any;
+};
 
 export const authenticateToken = async (
   req: AuthenticatedRequest,
