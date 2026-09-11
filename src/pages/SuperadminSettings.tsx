@@ -42,6 +42,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
 import { WhatsAppPreview } from '../components/Previews/WhatsAppPreview';
 import { EmailPreview } from '../components/Previews/EmailPreview';
+import { BaileysPairingModal } from '../components/Baileys/BaileysPairingModal';
 
 export const SuperadminSettings: React.FC = () => {
   const { isSuperadmin, user } = useAuth();
@@ -55,6 +56,7 @@ export const SuperadminSettings: React.FC = () => {
   const [companies, setCompanies] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string>('all');
   const [isLoading, setIsLoading] = useState(false);
+  const [baileysModalGw, setBaileysModalGw] = useState<any | null>(null);
 
   // Unmask secret state
   const [visibleSecrets, setVisibleSecrets] = useState<Record<string, boolean>>({});
@@ -1170,7 +1172,7 @@ export const SuperadminSettings: React.FC = () => {
 
                       {/* Header Actions */}
                       <div className="flex items-center gap-2.5">
-                        {gw.type.includes('whatsapp') && (
+                        {gw.type === 'whatsapp_meta' && (
                           <button
                             type="button"
                             onClick={() => handleFetchContactsForGateway(gw)}
@@ -1180,6 +1182,18 @@ export const SuperadminSettings: React.FC = () => {
                           >
                             <RefreshCw size={12} className={fetchingContactsGwId === gw.id ? 'animate-spin text-purple-400' : ''} />
                             <span>{fetchingContactsGwId === gw.id ? 'Fetching...' : 'Fetch Meta Contacts'}</span>
+                          </button>
+                        )}
+
+                        {gw.type === 'whatsapp_baileys' && (
+                          <button
+                            type="button"
+                            onClick={() => setBaileysModalGw(gw)}
+                            className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold shadow-md flex items-center gap-1.5 transition-all cursor-pointer"
+                            title="Open WhatsApp Web QR Scanner & Pairing Code"
+                          >
+                            <QrCode size={13} />
+                            <span>Scan QR Code / Pair Device</span>
                           </button>
                         )}
 
@@ -1244,11 +1258,23 @@ export const SuperadminSettings: React.FC = () => {
                             {testResult.success ? <CheckCircle2 size={16} className="shrink-0 text-emerald-400" /> : <AlertCircle size={16} className="shrink-0 text-rose-400" />}
                             <span>{testResult.message}</span>
                           </div>
-                          {testResult.success && (
-                            <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-black tracking-wider uppercase">
-                              Verified Active
-                            </span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {gw.type === 'whatsapp_baileys' && (
+                              <button
+                                type="button"
+                                onClick={() => setBaileysModalGw(gw)}
+                                className="px-3 py-1 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow transition-all cursor-pointer"
+                              >
+                                <QrCode size={12} />
+                                <span>{testResult.success ? 'Manage Linked Device' : 'Scan QR Code Now'}</span>
+                              </button>
+                            )}
+                            {testResult.success && (
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-black tracking-wider uppercase">
+                                Verified Active
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         {testResult.details && typeof testResult.details === 'object' && (
@@ -1516,6 +1542,88 @@ export const SuperadminSettings: React.FC = () => {
                           </div>
                         </div>
                       )}
+
+                    {/* Credentials & Management Fields (WhatsApp Baileys Web Socket) */}
+                    {gw.type === 'whatsapp_baileys' && (
+                      <div className="p-5 bg-[#070b14] border border-cyan-500/20 rounded-2xl space-y-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                              <QrCode size={20} />
+                            </div>
+                            <div>
+                              <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                                <span>WhatsApp Baileys Multi-Device Protocol</span>
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    gw.quality_rating === 'GREEN' || gw.status_details?.status === 'CONNECTED'
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                      : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                  }`}
+                                >
+                                  {gw.quality_rating === 'GREEN' || gw.status_details?.status === 'CONNECTED'
+                                    ? '● Connected & Active'
+                                    : '○ Disconnected / Scan Required'}
+                                </span>
+                              </h4>
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                Direct WhatsApp Web connection. No Meta per-conversation charges. Full Journey Builder & Live Inbox support.
+                              </p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => setBaileysModalGw(gw)}
+                            className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold shadow-lg flex items-center gap-2 transition-all cursor-pointer"
+                          >
+                            <QrCode size={14} />
+                            <span>
+                              {gw.status_details?.status === 'CONNECTED'
+                                ? 'Manage Linked WhatsApp Device'
+                                : 'Scan QR Code / Pair Device'}
+                            </span>
+                          </button>
+                        </div>
+
+                        {gw.status_details?.status === 'CONNECTED' ? (
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 text-xs">
+                            <div className="p-3 bg-[#0f172a] rounded-xl border border-slate-800">
+                              <span className="text-slate-500 text-[10px] block">Connected Phone Number</span>
+                              <span className="font-mono font-bold text-white text-sm">
+                                +{gw.status_details?.phone || gw.credentials?.display_phone_number || 'Linked'}
+                              </span>
+                            </div>
+                            <div className="p-3 bg-[#0f172a] rounded-xl border border-slate-800">
+                              <span className="text-slate-500 text-[10px] block">Push Name</span>
+                              <span className="font-semibold text-emerald-400">
+                                {gw.status_details?.push_name || gw.credentials?.push_name || 'Enterprise WhatsApp'}
+                              </span>
+                            </div>
+                            <div className="p-3 bg-[#0f172a] rounded-xl border border-slate-800">
+                              <span className="text-slate-500 text-[10px] block">Call Management</span>
+                              <span className="font-semibold text-cyan-400">
+                                Auto-Decline Calls (Polite Notice)
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4 bg-cyan-950/30 border border-cyan-500/30 rounded-xl flex items-center justify-between gap-3 text-xs">
+                            <div className="flex items-center gap-2.5 text-cyan-300">
+                              <AlertCircle size={16} className="shrink-0 text-cyan-400" />
+                              <span>Device not linked yet. Click the button to display live QR code or 8-digit phone pairing code.</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setBaileysModalGw(gw)}
+                              className="px-3.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold shrink-0 transition-all cursor-pointer shadow"
+                            >
+                              Open QR Scanner Now
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Credentials Editor Fields (Resend 3rd-Party API) */}
                     {gw.type === 'email_resend' && (
@@ -2873,6 +2981,18 @@ export const SuperadminSettings: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Baileys WhatsApp QR Scanner & Pairing Modal */}
+      {baileysModalGw && (
+        <BaileysPairingModal
+          isOpen={!!baileysModalGw}
+          onClose={() => setBaileysModalGw(null)}
+          gateway={baileysModalGw}
+          onSuccess={() => {
+            fetchGateways();
+          }}
+        />
       )}
     </div>
   );

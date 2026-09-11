@@ -151,7 +151,11 @@ export const AppContent: React.FC = () => {
         />
         <Route
           path="/gateways"
-          element={<Navigate to="/settings" replace />}
+          element={
+            <ProtectedLayout>
+              {() => <GatewaySettings />}
+            </ProtectedLayout>
+          }
         />
         <Route
           path="/users"
