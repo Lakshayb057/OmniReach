@@ -7,7 +7,7 @@ import { ingestContactsBatch, RawContactInput } from '../services/leadsMatcher';
 import { emitBroadcastUpdate } from '../services/worker';
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 // Helper to filter by company
 function getCompanyCondition(req: AuthenticatedRequest, startingIndex: number): { clause: string; params: any[] } {
@@ -95,19 +95,61 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
 
     if (req.file) {
       const buffer = req.file.buffer;
-      const workbook = xlsx.read(buffer, { type: 'buffer' });
-      const firstSheetName = workbook.SheetNames[0];
-      const sheet = workbook.Sheets[firstSheetName];
-      const jsonRows: any[] = xlsx.utils.sheet_to_json(sheet);
+      const originalName = req.file.originalname?.toLowerCase() || '';
+      const isCsv = originalName.endsWith('.csv') || req.file.mimetype === 'text/csv';
 
-      rawContacts = jsonRows.map((row) => ({
-        name: row['Full Name'] || row['Name'] || row['name'] || row['full_name'] || 'Customer',
-        phone: String(row['Phone'] || row['Contact'] || row['Mobile'] || row['phone'] || row['contact'] || ''),
-        email: row['Email'] || row['Mail'] || row['email'] || row['mail'] || '',
-        address: row['Address'] || row['City'] || row['address'] || '',
-        pan_no: row['PAN'] || row['pan_no'] || row['Pan Number'] || '',
-        city: row['City'] || row['city'] || '',
-      }));
+      if (isCsv) {
+        try {
+          const text = buffer.toString('utf8');
+          const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+          if (lines.length > 1) {
+            const headerLine = lines[0];
+            const headers = headerLine.split(',').map((h) => h.trim().replace(/^["']|["']$/g, '').toLowerCase());
+
+            const nameIdx = headers.findIndex((h) => h.includes('name'));
+            const phoneIdx = headers.findIndex((h) => h.includes('phone') || h.includes('contact') || h.includes('mobile') || h.includes('number'));
+            const emailIdx = headers.findIndex((h) => h.includes('email') || h.includes('mail'));
+            const addressIdx = headers.findIndex((h) => h.includes('address'));
+            const panIdx = headers.findIndex((h) => h.includes('pan'));
+            const cityIdx = headers.findIndex((h) => h.includes('city'));
+
+            for (let i = 1; i < lines.length; i++) {
+              const line = lines[i];
+              const cols = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map((c) => c.trim().replace(/^["']|["']$/g, ''));
+              const phone = phoneIdx !== -1 ? cols[phoneIdx] : '';
+              if (!phone) continue;
+
+              rawContacts.push({
+                name: (nameIdx !== -1 ? cols[nameIdx] : '') || 'Customer',
+                phone: String(phone),
+                email: (emailIdx !== -1 ? cols[emailIdx] : '') || '',
+                address: (addressIdx !== -1 ? cols[addressIdx] : '') || '',
+                pan_no: (panIdx !== -1 ? cols[panIdx] : '') || '',
+                city: (cityIdx !== -1 ? cols[cityIdx] : '') || '',
+              });
+            }
+          }
+        } catch (e) {
+          // Fall back to sheetjs if line parsing encounters edge cases
+          rawContacts = [];
+        }
+      }
+
+      if (rawContacts.length === 0) {
+        const workbook = xlsx.read(buffer, { type: 'buffer' });
+        const firstSheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[firstSheetName];
+        const jsonRows: any[] = xlsx.utils.sheet_to_json(sheet);
+
+        rawContacts = jsonRows.map((row) => ({
+          name: row['Full Name'] || row['Name'] || row['name'] || row['full_name'] || 'Customer',
+          phone: String(row['Phone'] || row['Contact'] || row['Mobile'] || row['phone'] || row['contact'] || ''),
+          email: row['Email'] || row['Mail'] || row['email'] || row['mail'] || '',
+          address: row['Address'] || row['City'] || row['address'] || '',
+          pan_no: row['PAN'] || row['pan_no'] || row['Pan Number'] || '',
+          city: row['City'] || row['city'] || '',
+        }));
+      }
     } else if (req.body.contacts) {
       rawContacts = Array.isArray(req.body.contacts)
         ? req.body.contacts

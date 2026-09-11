@@ -90,15 +90,20 @@ router.get('/me', authenticateToken, (req: AuthenticatedRequest, res) => {
   });
 });
 
-// 3. Superadmin: List All Users / Company Admins
-router.get('/users', authenticateToken, requireSuperadmin, async (req, res) => {
+// 3. List Users / Company Admins / Live Chat Agents
+router.get('/users', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { company_name } = req.query;
   try {
     let whereClause = '';
     const params: any[] = [];
-    if (company_name && company_name !== 'all') {
-      params.push(company_name);
-      whereClause = 'WHERE company_name = $1';
+    if (req.user?.role === 'superadmin') {
+      if (company_name && company_name !== 'all') {
+        params.push(company_name);
+        whereClause = 'WHERE company_name = $1';
+      }
+    } else {
+      params.push(req.user?.company_name || 'OmniReach Global');
+      whereClause = "WHERE (company_name = $1 OR company_name = 'OmniReach Global')";
     }
 
     const result = await query(
@@ -398,14 +403,23 @@ router.get('/companies-detailed', authenticateToken, requireSuperadmin, async (r
 });
 
 // 8. View Admin Audit Logs
-router.get('/audit-logs', authenticateToken, requireSuperadmin, async (req, res) => {
+router.get('/audit-logs', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   try {
+    let whereClause = '';
+    const params: any[] = [];
+    if (req.user?.role !== 'superadmin') {
+      params.push(req.user?.company_name || 'OmniReach Global');
+      whereClause = 'WHERE (u.company_name = $1 OR u.company_name IS NULL)';
+    }
+
     const logsRes = await query(
       `SELECT a.*, u.full_name as user_name, u.email as user_email, u.company_name
        FROM admin_audit_logs a
        LEFT JOIN users u ON a.user_id = u.id
+       ${whereClause}
        ORDER BY a.created_at DESC
-       LIMIT 100`
+       LIMIT 100`,
+      params
     );
     res.json({ success: true, logs: logsRes.rows });
   } catch (err: any) {

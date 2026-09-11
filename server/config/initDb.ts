@@ -24,6 +24,24 @@ export async function initializeDatabase() {
 
       ALTER TABLE gateways_config DROP CONSTRAINT IF EXISTS gateways_config_type_check;
       ALTER TABLE gateways_config ADD CONSTRAINT gateways_config_type_check CHECK (type IN ('whatsapp_meta', 'whatsapp_baileys', 'email_ses', 'email_smtp', 'email_resend'));
+
+      -- High-volume optimizations for lakhs of contacts
+      CREATE SEQUENCE IF NOT EXISTS fmcb_id_seq START WITH 1 INCREMENT BY 1;
+      
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_master_leads_phone') THEN
+          ALTER TABLE campaign_master_leads ADD CONSTRAINT uq_master_leads_phone UNIQUE (phone);
+        END IF;
+      EXCEPTION WHEN OTHERS THEN
+        NULL;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS idx_master_leads_co_optin ON campaign_master_leads(company_name, whatsapp_optin, email_optin);
+      CREATE INDEX IF NOT EXISTS idx_campaign_logs_broadcast_status ON campaign_logs(broadcast_id, status);
+
+      -- Synchronize fmcb_id_seq with highest numerical ID in campaign_master_leads
+      SELECT setval('fmcb_id_seq', GREATEST(COALESCE((SELECT MAX(NULLIF(regexp_replace(fmcb_id, '[^0-9]', '', 'g'), '')::bigint) FROM campaign_master_leads), 0), 1));
     `);
 
     // Seed/Verify Single Superadmin User (All other data starts completely clean from 0)

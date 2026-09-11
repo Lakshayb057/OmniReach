@@ -100,13 +100,18 @@ export async function processBroadcast(broadcast: any) {
       [broadcast.id]
     );
 
-    // If no specific leads linked to this broadcast id, fallback to all active leads
+    // If no specific leads linked to this broadcast id, target all master leads in company
     if (leadsRes.rows.length === 0) {
+      const compCondition = broadcast.company_name && broadcast.company_name !== 'OmniReach Global'
+        ? `WHERE (company_name = $1 OR company_name = 'OmniReach Global')`
+        : '';
+      const params = compCondition ? [broadcast.company_name] : [];
       leadsRes = await query(
         `SELECT id, urn, fmcb_id, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
          FROM campaign_master_leads
-         ORDER BY created_at ASC
-         LIMIT 500`
+         ${compCondition}
+         ORDER BY created_at ASC`,
+        params
       );
     }
 
@@ -121,6 +126,58 @@ export async function processBroadcast(broadcast: any) {
 
     const channel = broadcast.channel; // 'whatsapp', 'email', 'both'
 
+    // Buffers to batch database writes (eliminates 100,000+ single roundtrips)
+    let pendingLogs: any[] = [];
+    let pendingWaSuccessLeadIds: string[] = [];
+    let pendingEmailSuccessLeadIds: string[] = [];
+
+    const flushLogsAndCounters = async () => {
+      if (pendingLogs.length > 0) {
+        const logsToFlush = [...pendingLogs];
+        pendingLogs = [];
+
+        const valueTuples: string[] = [];
+        const params: any[] = [];
+        for (let idx = 0; idx < logsToFlush.length; idx++) {
+          const l = logsToFlush[idx];
+          const offset = idx * 8;
+          valueTuples.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8})`);
+          params.push(l.broadcast_id, l.master_lead_id, l.channel, l.recipient, l.status, l.error_message || null, l.meta_message_id || null, l.ses_message_id || null);
+        }
+        await query(
+          `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, error_message, meta_message_id, ses_message_id)
+           VALUES ${valueTuples.join(', ')}`,
+          params
+        );
+      }
+
+      if (pendingWaSuccessLeadIds.length > 0) {
+        const ids = [...pendingWaSuccessLeadIds];
+        pendingWaSuccessLeadIds = [];
+        await query(
+          `UPDATE campaign_master_leads 
+           SET whatsapp_sent_count = whatsapp_sent_count + 1,
+               whatsapp_delivered_count = whatsapp_delivered_count + 1,
+               last_contacted_at = CURRENT_TIMESTAMP
+           WHERE id = ANY($1)`,
+          [ids]
+        );
+      }
+
+      if (pendingEmailSuccessLeadIds.length > 0) {
+        const ids = [...pendingEmailSuccessLeadIds];
+        pendingEmailSuccessLeadIds = [];
+        await query(
+          `UPDATE campaign_master_leads 
+           SET email_sent_count = email_sent_count + 1,
+               email_delivered_count = email_delivered_count + 1,
+               last_contacted_at = CURRENT_TIMESTAMP
+           WHERE id = ANY($1)`,
+          [ids]
+        );
+      }
+    };
+
     for (let i = 0; i < leads.length; i++) {
       const lead: any = leads[i];
 
@@ -128,11 +185,14 @@ export async function processBroadcast(broadcast: any) {
       if (channel === 'whatsapp' || channel === 'both') {
         if (!lead.whatsapp_optin) {
           totalSuppressed++;
-          await query(
-            `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, error_message)
-             VALUES ($1, $2, 'whatsapp', $3, 'suppressed', 'Lead opted-out of WhatsApp communications')`,
-            [broadcast.id, lead.id, lead.phone]
-          );
+          pendingLogs.push({
+            broadcast_id: broadcast.id,
+            master_lead_id: lead.id,
+            channel: 'whatsapp',
+            recipient: lead.phone,
+            status: 'suppressed',
+            error_message: 'Lead opted-out of WhatsApp communications',
+          });
         } else {
           // Resolve Anti-Ban settings for Baileys
           const isBaileys = broadcast.whatsapp_gateway_type === 'whatsapp_baileys';
@@ -150,11 +210,14 @@ export async function processBroadcast(broadcast: any) {
             if (!dailyCheck.allowed) {
               console.warn(`🛑 Anti-Ban: Daily safety limit (${antiBanConfig.daily_send_limit}) reached for Baileys gateway ${broadcast.whatsapp_gateway_id}. Halting message dispatch.`);
               totalSuppressed++;
-              await query(
-                `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, error_message)
-                 VALUES ($1, $2, 'whatsapp', $3, 'suppressed', $4)`,
-                [broadcast.id, lead.id, lead.phone, `Daily safety limit (${antiBanConfig.daily_send_limit} msgs/day) reached. Message suppressed to protect number.`]
-              );
+              pendingLogs.push({
+                broadcast_id: broadcast.id,
+                master_lead_id: lead.id,
+                channel: 'whatsapp',
+                recipient: lead.phone,
+                status: 'suppressed',
+                error_message: `Daily safety limit (${antiBanConfig.daily_send_limit} msgs/day) reached. Message suppressed to protect number.`,
+              });
               continue;
             }
           }
@@ -198,34 +261,36 @@ export async function processBroadcast(broadcast: any) {
 
           if (res.status === 'suppressed') {
             totalSuppressed++;
-            await query(
-              `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, error_message)
-               VALUES ($1, $2, 'whatsapp', $3, 'suppressed', $4)`,
-              [broadcast.id, lead.id, lead.phone, res.error || 'Suppressed by anti-ban protection']
-            );
+            pendingLogs.push({
+              broadcast_id: broadcast.id,
+              master_lead_id: lead.id,
+              channel: 'whatsapp',
+              recipient: lead.phone,
+              status: 'suppressed',
+              error_message: res.error || 'Suppressed by anti-ban protection',
+            });
           } else if (res.success) {
             whatsappSent++;
             whatsappDelivered++;
-            await query(
-              `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, meta_message_id)
-               VALUES ($1, $2, 'whatsapp', $3, 'delivered', $4)`,
-              [broadcast.id, lead.id, lead.phone, res.messageId]
-            );
-            await query(
-              `UPDATE campaign_master_leads 
-               SET whatsapp_sent_count = whatsapp_sent_count + 1,
-                   whatsapp_delivered_count = whatsapp_delivered_count + 1,
-                   last_contacted_at = CURRENT_TIMESTAMP
-               WHERE id = $1`,
-              [lead.id]
-            );
+            pendingWaSuccessLeadIds.push(lead.id);
+            pendingLogs.push({
+              broadcast_id: broadcast.id,
+              master_lead_id: lead.id,
+              channel: 'whatsapp',
+              recipient: lead.phone,
+              status: 'delivered',
+              meta_message_id: res.messageId,
+            });
           } else {
             whatsappFailed++;
-            await query(
-              `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, error_message)
-               VALUES ($1, $2, 'whatsapp', $3, 'failed', $4)`,
-              [broadcast.id, lead.id, lead.phone, res.error]
-            );
+            pendingLogs.push({
+              broadcast_id: broadcast.id,
+              master_lead_id: lead.id,
+              channel: 'whatsapp',
+              recipient: lead.phone,
+              status: 'failed',
+              error_message: res.error,
+            });
           }
         }
       }
@@ -236,11 +301,14 @@ export async function processBroadcast(broadcast: any) {
           // No email provided
         } else if (!lead.email_optin) {
           totalSuppressed++;
-          await query(
-            `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, error_message)
-             VALUES ($1, $2, 'email', $3, 'suppressed', 'Lead opted-out of Email communications')`,
-            [broadcast.id, lead.id, lead.email]
-          );
+          pendingLogs.push({
+            broadcast_id: broadcast.id,
+            master_lead_id: lead.id,
+            channel: 'email',
+            recipient: lead.email,
+            status: 'suppressed',
+            error_message: 'Lead opted-out of Email communications',
+          });
         } else {
           const res = await sendEmailMessage(
             lead.email,
@@ -258,40 +326,45 @@ export async function processBroadcast(broadcast: any) {
           if (res.success) {
             emailSent++;
             emailDelivered++;
-            await query(
-              `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, ses_message_id)
-               VALUES ($1, $2, 'email', $3, 'delivered', $4)`,
-              [broadcast.id, lead.id, lead.email, res.messageId]
-            );
-            await query(
-              `UPDATE campaign_master_leads 
-               SET email_sent_count = email_sent_count + 1,
-                   email_delivered_count = email_delivered_count + 1,
-                   last_contacted_at = CURRENT_TIMESTAMP
-               WHERE id = $1`,
-              [lead.id]
-            );
+            pendingEmailSuccessLeadIds.push(lead.id);
+            pendingLogs.push({
+              broadcast_id: broadcast.id,
+              master_lead_id: lead.id,
+              channel: 'email',
+              recipient: lead.email,
+              status: 'delivered',
+              ses_message_id: res.messageId,
+            });
           } else {
             emailFailed++;
-            await query(
-              `INSERT INTO campaign_logs (broadcast_id, master_lead_id, channel, recipient, status, error_message)
-               VALUES ($1, $2, 'email', $3, 'failed', $4)`,
-              [broadcast.id, lead.id, lead.email, res.error]
-            );
+            pendingLogs.push({
+              broadcast_id: broadcast.id,
+              master_lead_id: lead.id,
+              channel: 'email',
+              recipient: lead.email,
+              status: 'failed',
+              error_message: res.error,
+            });
           }
         }
       }
 
-      // Periodic progress emission for live UI feedback
-      if ((i + 1) % 10 === 0 || i === leads.length - 1) {
+      // Periodic flush and progress emission
+      if ((i + 1) % 50 === 0 || i === leads.length - 1) {
+        await flushLogsAndCounters();
         emitBroadcastUpdate({
           broadcastId: broadcast.id,
           progress: Math.round(((i + 1) / leads.length) * 100),
           processed: i + 1,
           total: leads.length,
+          delivered: whatsappDelivered + emailDelivered,
+          suppressed: totalSuppressed,
+          failed: whatsappFailed + emailFailed,
         });
       }
     }
+
+    await flushLogsAndCounters();
 
     // Set 1-hour cooldown timestamp
     const cooldownTime = new Date(Date.now() + 60 * 60 * 1000);

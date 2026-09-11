@@ -56,7 +56,7 @@ export function validateEmail(rawEmail?: string): string | null {
  */
 export async function getNextFmcbId(): Promise<string> {
   const res = await query(`
-    SELECT COALESCE(MAX(NULLIF(regexp_replace(fmcb_id, '\\D', '', 'g'), '')::int), 0) + 1 as next_id 
+    SELECT COALESCE(MAX(NULLIF(regexp_replace(fmcb_id, '[^0-9]', '', 'g'), '')::int), 0) + 1 as next_id 
     FROM campaign_master_leads
   `);
   const num = parseInt(res.rows[0].next_id, 10);
@@ -66,6 +66,8 @@ export async function getNextFmcbId(): Promise<string> {
 /**
  * Ingests a batch of raw contact records with zero duplicate upsert,
  * Leads Repository URN lookup, and FMCB ID generation.
+ * Optimized for ultra-high throughput (lakhs / 100,000+ contacts) using
+ * chunked multi-row batch upserts and PostgreSQL native sequences.
  */
 export async function ingestContactsBatch(
   contacts: RawContactInput[],
@@ -83,107 +85,126 @@ export async function ingestContactsBatch(
     leadIds: [],
   };
 
-  const client = await pool.connect();
+  if (!contacts || contacts.length === 0) return result;
 
-  try {
-    await client.query('BEGIN');
+  // 1. In-memory validation, normalization, and deduplication across file
+  // Using Map keyed by normalized phone to prevent intra-batch unique conflicts
+  const validContactsMap = new Map<string, { item: RawContactInput; email: string | null }>();
 
-    for (let i = 0; i < contacts.length; i++) {
-      const item = contacts[i];
-      const normalizedPhone = normalizePhone(item.phone);
-      const validatedEmail = validateEmail(item.email);
+  for (let i = 0; i < contacts.length; i++) {
+    const item = contacts[i];
+    const phone = normalizePhone(item.phone);
+    const email = validateEmail(item.email);
 
-      if (!normalizedPhone) {
-        result.invalidCount++;
+    if (!phone) {
+      result.invalidCount++;
+      if (result.errors.length < 50) {
         result.errors.push({
           row: i + 1,
           reason: 'Invalid phone number. Must be at least 10 digits.',
           data: item,
         });
-        continue;
+      }
+      continue;
+    }
+
+    result.totalProcessed++;
+    // Overwrite with latest entry for this phone if duplicate in the same file
+    validContactsMap.set(phone, { item, email });
+  }
+
+  const validEntries = Array.from(validContactsMap.entries());
+  if (validEntries.length === 0) return result;
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Ensure fmcb_id_seq is synchronized with current max
+    await client.query(`
+      SELECT setval('fmcb_id_seq', GREATEST(COALESCE((SELECT MAX(NULLIF(regexp_replace(fmcb_id, '[^0-9]', '', 'g'), '')::bigint) FROM campaign_master_leads), 0), 1), false);
+    `);
+
+    // Process in chunks of 1,000 contacts for ultra-high speed and low memory
+    const CHUNK_SIZE = 1000;
+
+    for (let c = 0; c < validEntries.length; c += CHUNK_SIZE) {
+      const chunk = validEntries.slice(c, c + CHUNK_SIZE);
+      const chunkPhones = chunk.map(([phone]) => phone);
+      const chunkEmails = chunk.map(([, data]) => data.email).filter(Boolean) as string[];
+
+      // Fast Bulk Lookup in Leads Repository for Ground Truth URN in 1 query
+      const repoUrnMap = new Map<string, string>();
+      if (chunkPhones.length > 0) {
+        const repoRes = await client.query(
+          `SELECT urn, phone, email 
+           FROM leads_repository 
+           WHERE phone = ANY($1) OR (email IS NOT NULL AND email = ANY($2))`,
+          [chunkPhones, chunkEmails]
+        );
+        for (const r of repoRes.rows) {
+          if (r.phone) repoUrnMap.set(r.phone, r.urn);
+          if (r.email) repoUrnMap.set(r.email.toLowerCase(), r.urn);
+        }
       }
 
-      result.totalProcessed++;
+      // Build Multi-row UPSERT query for this chunk
+      // Each row takes 10 parameters
+      const queryParams: any[] = [];
+      const rowTuples: string[] = [];
 
-      // Check if contact already exists in campaign_master_leads
-      const existingRes = await client.query(
-        'SELECT id, urn, fmcb_id, full_name, email, whatsapp_optin, email_optin FROM campaign_master_leads WHERE phone = $1',
-        [normalizedPhone]
-      );
+      for (let i = 0; i < chunk.length; i++) {
+        const [phone, data] = chunk[i];
+        const item = data.item;
+        const mappedUrn = repoUrnMap.get(phone) || (data.email ? repoUrnMap.get(data.email) : null) || null;
+        if (mappedUrn) result.matchedUrnCount++;
 
-      if (existingRes.rows.length > 0) {
-        // Contact already exists -> Zero Duplicate Update
-        const existing = existingRes.rows[0];
-        const leadId = existing.id;
-        result.leadIds.push(leadId);
-        result.updatedExisting++;
-
-        await client.query(
-          `UPDATE campaign_master_leads 
-           SET full_name = COALESCE($1, full_name),
-               email = COALESCE($2, email),
-               address = COALESCE($3, address),
-               pan_no = COALESCE($4, pan_no),
-               city = COALESCE($5, city),
-               company_name = COALESCE(NULLIF($6, 'OmniReach Global'), company_name),
-               last_broadcast_id = COALESCE($7, last_broadcast_id),
-               updated_at = CURRENT_TIMESTAMP
-           WHERE id = $8`,
-          [
-            item.name || null,
-            validatedEmail || null,
-            item.address || null,
-            item.pan_no || null,
-            item.city || null,
-            companyName,
-            broadcastId || null,
-            leadId,
-          ]
-        );
-      } else {
-        // New Contact -> Check OmniReach Leads Repository for Ground Truth URN
-        const repoMatch = await client.query(
-          'SELECT urn FROM leads_repository WHERE phone = $1 OR (email IS NOT NULL AND email = $2) LIMIT 1',
-          [normalizedPhone, validatedEmail || '']
+        const offset = i * 10;
+        rowTuples.push(
+          `($${offset + 1}, 'FMCB' || LPAD(nextval('fmcb_id_seq')::text, 5, '0'), $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, CURRENT_TIMESTAMP)`
         );
 
-        let mappedUrn: string | null = null;
-        if (repoMatch.rows.length > 0 && repoMatch.rows[0].urn) {
-          mappedUrn = repoMatch.rows[0].urn;
-          result.matchedUrnCount++;
+        queryParams.push(
+          mappedUrn,
+          companyName,
+          item.name || 'Valued Customer',
+          phone,
+          data.email,
+          item.address || null,
+          item.pan_no || null,
+          item.city || null,
+          JSON.stringify(item.custom_attributes || {}),
+          broadcastId || null
+        );
+      }
+
+      const upsertSql = `
+        INSERT INTO campaign_master_leads 
+        (urn, fmcb_id, company_name, full_name, phone, email, address, pan_no, city, custom_attributes, last_broadcast_id, updated_at)
+        VALUES ${rowTuples.join(',\n')}
+        ON CONFLICT (phone) DO UPDATE SET 
+          full_name = EXCLUDED.full_name,
+          email = COALESCE(EXCLUDED.email, campaign_master_leads.email),
+          address = COALESCE(EXCLUDED.address, campaign_master_leads.address),
+          pan_no = COALESCE(EXCLUDED.pan_no, campaign_master_leads.pan_no),
+          city = COALESCE(EXCLUDED.city, campaign_master_leads.city),
+          company_name = COALESCE(NULLIF(EXCLUDED.company_name, 'OmniReach Global'), campaign_master_leads.company_name),
+          last_broadcast_id = COALESCE(EXCLUDED.last_broadcast_id, campaign_master_leads.last_broadcast_id),
+          updated_at = CURRENT_TIMESTAMP
+        RETURNING id, (xmax = 0) AS is_inserted
+      `;
+
+      const chunkRes = await client.query(upsertSql, queryParams);
+
+      for (const row of chunkRes.rows) {
+        result.leadIds.push(row.id);
+        if (row.is_inserted) {
+          result.newInserted++;
+          result.newFmcbCount++;
+        } else {
+          result.updatedExisting++;
         }
-
-        // Generate sequential FMCB ID safely
-        const syncRes = await client.query(`
-          SELECT COALESCE(MAX(NULLIF(regexp_replace(fmcb_id, '\\D', '', 'g'), '')::int), 0) + 1 as next_id 
-          FROM campaign_master_leads
-        `);
-        const nextNum = parseInt(syncRes.rows[0].next_id, 10);
-        const fmcbId = `FMCB${String(nextNum).padStart(5, '0')}`;
-        result.newFmcbCount++;
-
-        const insertRes = await client.query(
-          `INSERT INTO campaign_master_leads 
-           (urn, fmcb_id, company_name, full_name, phone, email, address, pan_no, city, custom_attributes, last_broadcast_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-           RETURNING id`,
-          [
-            mappedUrn,
-            fmcbId,
-            companyName,
-            item.name || 'Valued Customer',
-            normalizedPhone,
-            validatedEmail || null,
-            item.address || null,
-            item.pan_no || null,
-            item.city || null,
-            JSON.stringify(item.custom_attributes || {}),
-            broadcastId || null,
-          ]
-        );
-
-        result.newInserted++;
-        result.leadIds.push(insertRes.rows[0].id);
       }
     }
 

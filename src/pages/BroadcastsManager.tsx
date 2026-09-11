@@ -86,10 +86,11 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
         },
       });
       if (res.data.success) {
-        setCampaigns(res.data.campaigns);
+        setCampaigns(res.data.campaigns || []);
       }
     } catch (err) {
       console.error('Failed to load campaigns:', err);
+      setCampaigns([]);
     } finally {
       setIsLoading(false);
     }

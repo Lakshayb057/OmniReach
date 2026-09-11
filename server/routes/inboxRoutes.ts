@@ -96,16 +96,26 @@ router.get('/conversations', authenticateToken, async (req: AuthenticatedRequest
     }));
 
     // Stats summary
+    const statsParams: any[] = [];
+    let agentFilter = 'FALSE';
+    if (req.user?.id) {
+      statsParams.push(req.user.id);
+      agentFilter = `assigned_agent_id = $${statsParams.length}`;
+    }
+
+    const statsCompCond = getCompanyCondition(req, statsParams.length + 1);
+    statsParams.push(...statsCompCond.params);
+
     const countsRes = await query(
       `SELECT 
          count(*) FILTER (WHERE status != 'resolved') as open_count,
-         count(*) FILTER (WHERE assigned_agent_id = $1 AND status != 'resolved') as mine_count,
+         count(*) FILTER (WHERE ${agentFilter} AND status != 'resolved') as mine_count,
          count(*) FILTER (WHERE assigned_agent_id IS NULL AND status != 'resolved') as unassigned_count,
          count(*) FILTER (WHERE status = 'bot_handling') as bot_count,
          count(*) FILTER (WHERE priority = 'urgent' AND status != 'resolved') as urgent_count
        FROM conversations c
-       ${compCond.clause ? `WHERE ${compCond.clause}` : ''}`,
-      req.user?.id ? (compCond.clause ? [req.user.id, ...compCond.params] : [req.user.id]) : []
+       ${statsCompCond.clause ? `WHERE ${statsCompCond.clause}` : ''}`,
+      statsParams
     );
 
     res.json({
@@ -273,7 +283,7 @@ router.get('/canned-responses', authenticateToken, async (req: AuthenticatedRequ
     const compCond = getCompanyCondition(req, 1);
     const whereClause = compCond.clause ? `WHERE ${compCond.clause}` : '';
     const cannedRes = await query(
-      `SELECT * FROM canned_responses ${whereClause} ORDER BY shortcut ASC`,
+      `SELECT c.* FROM canned_responses c ${whereClause} ORDER BY c.shortcut ASC`,
       compCond.params
     );
     res.json({ success: true, cannedResponses: cannedRes.rows });

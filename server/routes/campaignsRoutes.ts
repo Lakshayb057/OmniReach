@@ -46,6 +46,7 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res) => {
       if (b.status === 'scheduled' && b.scheduled_at) {
         const diffMs = new Date(b.scheduled_at).getTime() - Date.now();
         countdownSeconds = Math.max(0, Math.floor(diffMs / 1000));
+        if (isNaN(countdownSeconds)) countdownSeconds = 0;
       }
       return {
         ...b,

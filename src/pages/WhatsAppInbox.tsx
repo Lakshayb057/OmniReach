@@ -196,8 +196,8 @@ export const WhatsAppInbox: React.FC = () => {
       if (res.data.success) {
         setConversations(res.data.conversations || []);
         setStats(res.data.stats || {});
-        if (res.data.conversations.length > 0 && !selectedConv && showLoading) {
-          loadConversationDetails(res.data.conversations[0].id);
+        if (res.data.conversations && res.data.conversations.length > 0 && !selectedConv && showLoading) {
+          await loadConversationDetails(res.data.conversations[0].id);
         }
       }
     } catch (err) {

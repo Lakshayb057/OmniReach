@@ -163,8 +163,8 @@ export const MasterDataCenter: React.FC = () => {
         setUploadReport(res.data.report);
         fetchLeads();
       }
-    } catch (err) {
-      alert('Failed to ingest contacts.');
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to ingest contacts.');
     } finally {
       setUploadLoading(false);
     }
