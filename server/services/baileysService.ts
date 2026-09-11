@@ -159,24 +159,24 @@ export async function initBaileysSession(
     // Listen for auth credentials update
     sock.ev.on('creds.update', saveCreds);
 
-    // If pairing code was requested and not yet registered
-    if (options.phoneNumberForPairing && !sock.authState.creds.registered) {
-      setTimeout(async () => {
-        try {
-          const cleanPhone = options.phoneNumberForPairing!.replace(/[^0-9]/g, '');
-          const pairingCode = await sock.requestPairingCode(cleanPhone);
-          session.pairingCode = pairingCode;
-          emitBaileysEvent('BAILEYS_PAIRING_CODE', {
-            gatewayId,
-            pairingCode,
-            phoneNumber: cleanPhone,
-          });
-          console.log(`🔑 Baileys Pairing Code for ${cleanPhone}: ${pairingCode}`);
-        } catch (pairErr: any) {
-          console.error(`❌ Failed to request Baileys pairing code for gateway ${gatewayId}:`, pairErr.message);
+    // Reject incoming voice/video calls gracefully on this automated line
+    sock.ev.on('call', async (calls) => {
+      for (const call of calls) {
+        if (call.status === 'offer') {
+          try {
+            await sock.rejectCall(call.id, call.from);
+            console.log(`📞 Auto-rejected incoming WhatsApp call from ${call.from} (Automated broadcast channel)`);
+            if (call.from) {
+              await sock.sendMessage(call.from, {
+                text: '👋 *Notice:* This WhatsApp number is an automated business channel and does not accept voice or video calls. Please send your message or query as text here!',
+              });
+            }
+          } catch (callErr: any) {
+            console.warn('Error handling incoming WhatsApp call:', callErr.message);
+          }
         }
-      }, 3000);
-    }
+      }
+    });
 
     // Connection lifecycle
     sock.ev.on('connection.update', async (update) => {
@@ -265,18 +265,42 @@ export async function initBaileysSession(
           session.status = 'disconnected';
           session.socket = null;
           session.qrCodeDataUrl = null;
+          session.qrRaw = null;
+          session.pairingCode = null;
           return;
         }
 
+        const isRegistered = Boolean(sock.authState?.creds?.registered);
         const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
-        const reason = lastDisconnect?.error?.message || 'Unknown error';
+        const errorMsg = (lastDisconnect?.error as any)?.message || 'Unknown error';
         const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+        const isTimedOut = statusCode === DisconnectReason.timedOut;
+        const isRestartRequired = statusCode === DisconnectReason.restartRequired;
 
-        console.warn(`⚠️ Baileys Gateway "${gatewayId}" connection closed. Status: ${statusCode}. Reason: ${reason}`);
+        // Detect if device explicitly cancelled or rejected pairing
+        const isPairingRejected =
+          errorMsg.toLowerCase().includes('reject') ||
+          errorMsg.toLowerCase().includes('cancel') ||
+          (!isRegistered && statusCode === 401);
+
+        console.warn(`⚠️ Baileys Gateway "${gatewayId}" connection closed. Status: ${statusCode}. Reason: ${errorMsg} (Registered: ${isRegistered})`);
 
         session.status = 'disconnected';
         session.socket = null;
         session.qrCodeDataUrl = null;
+        session.qrRaw = null;
+        session.pairingCode = null;
+
+        if (isPairingRejected) {
+          console.log(`❌ Pairing rejected or cancelled by WhatsApp device for gateway "${gatewayId}".`);
+          emitBaileysEvent('BAILEYS_STATUS', {
+            gatewayId,
+            status: 'disconnected',
+            reason: 'pairing_rejected',
+            message: 'Pairing was rejected or cancelled on the WhatsApp device. Please try again.',
+          });
+          return;
+        }
 
         // If logged out from phone, purge auth folder
         if (isLoggedOut) {
@@ -311,12 +335,34 @@ export async function initBaileysSession(
             reason: 'logged_out',
             message: 'Session was unlinked/logged out from WhatsApp.',
           });
-        } else {
-          // Auto-reconnect if temporary disconnect (network drop, server restart)
+          return;
+        }
+
+        if (isTimedOut && !isRegistered) {
+          console.log(`⏳ Baileys Gateway "${gatewayId}" pairing/QR timed out.`);
+          emitBaileysEvent('BAILEYS_STATUS', {
+            gatewayId,
+            status: 'disconnected',
+            reason: 'pairing_timeout',
+            message: 'QR code or pairing code expired. Click Refresh to generate a new one.',
+          });
+          return;
+        }
+
+        if (isRestartRequired) {
+          console.log(`🔄 Restart required for gateway "${gatewayId}". Re-initializing socket...`);
+          initBaileysSession(gatewayId, companyName).catch((err) => {
+            console.error(`Restart failed for ${gatewayId}:`, err.message);
+          });
+          return;
+        }
+
+        // Only auto-reconnect if already registered/paired device dropped connection
+        if (isRegistered) {
           session.reconnectAttempts = (session.reconnectAttempts || 0) + 1;
           const retryDelay = Math.min(30000, 3000 * Math.pow(1.5, session.reconnectAttempts - 1));
 
-          console.log(`🔄 Attempting to reconnect Baileys gateway "${gatewayId}" in ${Math.round(retryDelay / 1000)}s...`);
+          console.log(`🔄 Attempting to reconnect registered Baileys gateway "${gatewayId}" in ${Math.round(retryDelay / 1000)}s... (attempt ${session.reconnectAttempts})`);
 
           emitBaileysEvent('BAILEYS_STATUS', {
             gatewayId,
@@ -455,22 +501,34 @@ export async function requestBaileysPairingCode(
   }
 
   let session = activeSessions.get(gatewayId);
-  if (!session || !session.socket) {
-    session = await initBaileysSession(gatewayId, companyName, { phoneNumberForPairing: cleanPhone });
+  if (session && session.status === 'connected') {
+    throw new Error('This Baileys gateway is already connected to WhatsApp.');
   }
 
-  if (session.status === 'connected') {
-    throw new Error('This Baileys gateway is already connected.');
+  // If previous socket exists but unauthenticated, close it to guarantee fresh pairing
+  if (session && session.socket && !session.socket.authState?.creds?.registered) {
+    try {
+      session.isExplicitlyClosed = true;
+      session.socket.end(undefined);
+    } catch (e) {}
+    activeSessions.delete(gatewayId);
   }
 
-  // Wait a short moment if socket is spinning up
-  if (!session.socket) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+  session = await initBaileysSession(gatewayId, companyName);
+
+  // Poll until socket is ready to receive requestPairingCode
+  let waitMs = 0;
+  while ((!session.socket || typeof session.socket.requestPairingCode !== 'function') && waitMs < 8000) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    waitMs += 500;
   }
 
-  if (!session.socket) {
-    throw new Error('Baileys socket could not be created.');
+  if (!session.socket || typeof session.socket.requestPairingCode !== 'function') {
+    throw new Error('Baileys socket is not ready to request pairing code. Please retry in a moment.');
   }
+
+  // Small delay for initial state sync
+  await new Promise((resolve) => setTimeout(resolve, 1000));
 
   const code = await session.socket.requestPairingCode(cleanPhone);
   session.pairingCode = code;
@@ -481,6 +539,7 @@ export async function requestBaileysPairingCode(
     phoneNumber: cleanPhone,
   });
 
+  console.log(`🔑 Baileys Pairing Code generated for +${cleanPhone}: ${code}`);
   return code;
 }
 
@@ -658,6 +717,70 @@ export async function disconnectBaileysSession(gatewayId: string, purgeAuth: boo
   });
 
   return true;
+}
+
+/**
+ * Cancel and abort an in-progress pairing attempt (QR scan or pairing code)
+ */
+export async function cancelBaileysPairing(gatewayId: string): Promise<boolean> {
+  const session = activeSessions.get(gatewayId);
+  if (session) {
+    session.isExplicitlyClosed = true;
+    if (session.reconnectTimer) {
+      clearTimeout(session.reconnectTimer);
+      session.reconnectTimer = undefined;
+    }
+    if (session.socket) {
+      try {
+        session.socket.end(new Error('Pairing cancelled by user'));
+      } catch (e) {
+        // Ignore
+      }
+      session.socket = null;
+    }
+    session.status = 'disconnected';
+    session.qrCodeDataUrl = null;
+    session.qrRaw = null;
+    session.pairingCode = null;
+  }
+
+  // If not yet registered, remove temporary unauthenticated keys
+  const sessionDir = getAuthFolder(gatewayId);
+  try {
+    if (fs.existsSync(sessionDir)) {
+      const credsFile = path.join(sessionDir, 'creds.json');
+      if (fs.existsSync(credsFile)) {
+        try {
+          const creds = JSON.parse(fs.readFileSync(credsFile, 'utf8'));
+          if (!creds.me) {
+            fs.rmSync(sessionDir, { recursive: true, force: true });
+          }
+        } catch {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('Note cleaning unauthenticated session dir:', err.message);
+  }
+
+  activeSessions.delete(gatewayId);
+
+  emitBaileysEvent('BAILEYS_STATUS', {
+    gatewayId,
+    status: 'disconnected',
+    reason: 'pairing_cancelled',
+    message: 'Pairing cancelled by user. Ready for new connection.',
+  });
+
+  return true;
+}
+
+/**
+ * Hard reset: purge all auth credentials and disconnect socket
+ */
+export async function resetBaileysSession(gatewayId: string): Promise<boolean> {
+  return disconnectBaileysSession(gatewayId, true);
 }
 
 /**

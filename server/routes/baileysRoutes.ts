@@ -8,6 +8,8 @@ import {
   requestBaileysPairingCode,
   sendBaileysMessage,
   disconnectBaileysSession,
+  cancelBaileysPairing,
+  resetBaileysSession,
 } from '../services/baileysService';
 import {
   DEFAULT_ANTI_BAN_SETTINGS,
@@ -177,6 +179,38 @@ router.post('/:id/disconnect', authenticateToken, requireAdmin, async (req: Auth
     res.json({
       success: true,
       message: 'Baileys gateway session disconnected and unlinked.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * 6b. Cancel ongoing Pairing or QR attempt (Reject/Abort)
+ */
+router.post('/:id/cancel-pairing', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { id } = req.params;
+  try {
+    await cancelBaileysPairing(String(id));
+    res.json({
+      success: true,
+      message: 'Ongoing pairing attempt cancelled and aborted.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+/**
+ * 6c. Hard Reset & Purge Baileys Session
+ */
+router.post('/:id/reset-session', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { id } = req.params;
+  try {
+    await resetBaileysSession(String(id));
+    res.json({
+      success: true,
+      message: 'Baileys session reset and credentials purged successfully.',
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
