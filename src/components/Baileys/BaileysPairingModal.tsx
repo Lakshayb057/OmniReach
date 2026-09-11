@@ -62,9 +62,12 @@ export const BaileysPairingModal: React.FC<BaileysPairingModalProps> = ({
   // Load gateway status whenever modal opens
   useEffect(() => {
     if (isOpen && gatewayId) {
-      fetchStatus();
       setPairingRejectionReason(null);
       setPairingCodeResult(null);
+      if (gateway?.credentials?.phone_number) {
+        setPairingPhoneInput(gateway.credentials.phone_number);
+      }
+      fetchStatus();
     }
   }, [isOpen, gatewayId]);
 
@@ -74,9 +77,14 @@ export const BaileysPairingModal: React.FC<BaileysPairingModalProps> = ({
       const res = await axios.get(`/api/baileys/${gatewayId}/status`);
       if (res.data.success) {
         setSessionData(res.data);
+        // Auto-generate QR code immediately if not yet connected and no QR exists!
+        if (res.data.status !== 'connected' && !res.data.hasQr) {
+          handleStartQR();
+        }
       }
     } catch (err) {
       console.error('Failed to fetch Baileys status:', err);
+      handleStartQR();
     }
   };
 

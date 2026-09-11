@@ -37,6 +37,7 @@ import {
   Send,
   Zap,
   QrCode,
+  Phone,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
@@ -445,6 +446,7 @@ export const SuperadminSettings: React.FC = () => {
       });
       if (res.data.success) {
         setShowAddModal(false);
+        const createdGw = res.data.gateway;
         setNewGwName('');
         setNewGwCompany('OmniReach Global');
         setIsCustomNewGwCompany(false);
@@ -454,14 +456,19 @@ export const SuperadminSettings: React.FC = () => {
         fetchCompanies();
         fetchTemplates();
 
-        // Trigger Detailed Success & Allocation Summary Report Dialog
-        setAllocationReportModal({
-          isOpen: true,
-          gateway: res.data.gateway,
-          metaDetails: res.data.metaDetails,
-          contactsReport: res.data.contactsReport,
-          templatesReport: res.data.templatesReport,
-        });
+        if (newGwType === 'whatsapp_baileys') {
+          // Immediately launch the live Baileys Pairing / QR Scanner modal for this newly allocated company gateway!
+          setBaileysModalGw(createdGw);
+        } else {
+          // Trigger Detailed Success & Allocation Summary Report Dialog for Meta/Email
+          setAllocationReportModal({
+            isOpen: true,
+            gateway: createdGw,
+            metaDetails: res.data.metaDetails,
+            contactsReport: res.data.contactsReport,
+            templatesReport: res.data.templatesReport,
+          });
+        }
       }
     } catch (err: any) {
       alert(err.response?.data?.message || 'Failed to create gateway.');
@@ -2468,11 +2475,17 @@ export const SuperadminSettings: React.FC = () => {
 
               {/* Dynamic Credential Inputs for Add Modal */}
               {newGwType === 'whatsapp_baileys' && (
-                <div className="space-y-3.5 p-4 bg-[#070b14] border border-cyan-500/30 rounded-2xl">
-                  <div className="flex items-center gap-2 text-cyan-300 font-bold text-xs">
-                    <QrCode size={15} className="text-cyan-400" />
-                    <span>WhatsApp Baileys Web Multi-Device Protocol</span>
+                <div className="space-y-4 p-5 bg-[#070b14] border border-cyan-500/40 rounded-2xl">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-cyan-300 font-bold text-xs">
+                      <QrCode size={16} className="text-cyan-400" />
+                      <span>WhatsApp Baileys Multi-Device Pairing Setup</span>
+                    </div>
+                    <span className="text-[10px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 px-2 py-0.5 rounded-full font-bold">
+                      Direct Web Sockets
+                    </span>
                   </div>
+
                   <div>
                     <label className="text-slate-300 font-bold block mb-1">Session Name / Description</label>
                     <input
@@ -2483,20 +2496,65 @@ export const SuperadminSettings: React.FC = () => {
                       className="w-full px-3 py-2.5 bg-[#0c1322] border border-slate-800 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
                     />
                   </div>
+
+                  {/* Preferred Linking Method Option */}
                   <div>
-                    <label className="text-slate-300 font-bold block mb-1">
-                      Optional Phone Number for Direct Pairing Code
-                    </label>
-                    <input
-                      type="text"
-                      value={newGwCreds.phone_number || ''}
-                      onChange={(e) => setNewGwCreds({ ...newGwCreds, phone_number: e.target.value })}
-                      placeholder="e.g. 919876543210 (leave blank to scan QR code in Gateway Settings)"
-                      className="w-full px-3 py-2.5 bg-[#0c1322] border border-slate-800 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
-                    />
+                    <label className="text-slate-300 font-bold block mb-1.5">Preferred Initial Linking Method</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setNewGwCreds({ ...newGwCreds, pairing_mode: 'qr' })}
+                        className={`p-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                          newGwCreds.pairing_mode !== 'phone'
+                            ? 'bg-cyan-600/20 border-cyan-500 text-white shadow-sm'
+                            : 'bg-[#0c1322] border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <QrCode size={14} className="text-cyan-400" />
+                        <span>Scan QR Code</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNewGwCreds({ ...newGwCreds, pairing_mode: 'phone' })}
+                        className={`p-2.5 rounded-xl border text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                          newGwCreds.pairing_mode === 'phone'
+                            ? 'bg-cyan-600/20 border-cyan-500 text-white shadow-sm'
+                            : 'bg-[#0c1322] border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <Phone size={14} className="text-cyan-400" />
+                        <span>Phone Number (Pairing Code)</span>
+                      </button>
+                    </div>
                   </div>
-                  <div className="p-3 bg-cyan-500/10 border border-cyan-500/20 rounded-xl text-[11px] text-cyan-200 leading-relaxed">
-                    ✨ <strong>Direct Multi-Device:</strong> Once created, link WhatsApp instantly via QR code scan or 8-digit pairing code in <em>Gateway Settings</em>. Supports freeform broadcast campaigns, journey state machines, and live chat without Meta conversation fees.
+
+                  {newGwCreds.pairing_mode === 'phone' ? (
+                    <div>
+                      <label className="text-slate-300 font-bold block mb-1">
+                        WhatsApp Phone Number (with Country Code)
+                      </label>
+                      <input
+                        type="text"
+                        value={newGwCreds.phone_number || ''}
+                        onChange={(e) => setNewGwCreds({ ...newGwCreds, phone_number: e.target.value })}
+                        placeholder="e.g. 919876543210 or 15551234567"
+                        className="w-full px-3 py-2.5 bg-[#0c1322] border border-slate-800 rounded-xl text-white font-mono text-xs focus:outline-none focus:border-cyan-500"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-1 block">
+                        Digits only without '+' or spaces. An 8-character pairing code will be generated immediately upon allocation.
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="p-3 bg-cyan-950/40 border border-cyan-500/30 rounded-xl text-[11px] text-cyan-200 flex items-center gap-2">
+                      <QrCode size={18} className="shrink-0 text-cyan-400" />
+                      <span>
+                        An instant, live WhatsApp Web QR code with auto-refresh will open automatically as soon as you click <strong>Allocate & Connect WhatsApp</strong> below.
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl text-[11px] text-slate-300 leading-relaxed">
+                    ✨ <strong>Company Isolation:</strong> This Baileys session will be partitioned exclusively for <strong>{newGwCompany || 'the selected company'}</strong>. Broadcasts, journey flows, and live chat will operate through this number without Meta conversation costs.
                   </div>
                 </div>
               )}
@@ -2867,9 +2925,22 @@ export const SuperadminSettings: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isAdding}
-                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold shadow-lg shadow-cyan-500/20 disabled:opacity-50 cursor-pointer"
+                  className={`px-5 py-2.5 rounded-xl text-white font-bold shadow-lg disabled:opacity-50 cursor-pointer flex items-center gap-2 ${
+                    newGwType === 'whatsapp_baileys'
+                      ? 'bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 shadow-emerald-500/20'
+                      : 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 shadow-cyan-500/20'
+                  }`}
                 >
-                  {isAdding ? 'Allocating...' : 'Save & Allocate Gateway'}
+                  {isAdding ? (
+                    'Allocating...'
+                  ) : newGwType === 'whatsapp_baileys' ? (
+                    <>
+                      <QrCode size={16} />
+                      <span>Allocate & Connect WhatsApp</span>
+                    </>
+                  ) : (
+                    'Save & Allocate Gateway'
+                  )}
                 </button>
               </div>
             </form>

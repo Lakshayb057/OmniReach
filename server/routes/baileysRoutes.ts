@@ -89,6 +89,15 @@ router.post('/:id/connect', authenticateToken, requireAdmin, async (req: Authent
       phone_number ? { phoneNumberForPairing: phone_number } : {}
     );
 
+    // Wait up to 3 seconds for QR code generation to complete so the HTTP response returns it immediately
+    if (!session.qrCodeDataUrl && (session.status as string) !== 'connected') {
+      let waited = 0;
+      while (!session.qrCodeDataUrl && (session.status as string) !== 'connected' && waited < 3000) {
+        await new Promise((r) => setTimeout(r, 200));
+        waited += 200;
+      }
+    }
+
     res.json({
       success: true,
       message: 'Baileys session initialization started.',
