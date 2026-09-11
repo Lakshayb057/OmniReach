@@ -1,10 +1,37 @@
 import express from 'express';
 import multer from 'multer';
+import crypto from 'crypto';
 import * as xlsx from 'xlsx';
 import { query } from '../config/db';
 import { authenticateToken, requireSuperadmin, logAdminAudit, AuthenticatedRequest } from '../middleware/auth';
 import { ingestContactsBatch, RawContactInput } from '../services/leadsMatcher';
 import { emitBroadcastUpdate } from '../services/worker';
+
+export interface IngestJob {
+  jobId: string;
+  targetCompany: string;
+  totalRows: number;
+  processed: number;
+  percent: number;
+  newInserted: number;
+  updatedExisting: number;
+  status: 'processing' | 'completed' | 'failed';
+  report?: any;
+  error?: string;
+  startedAt: number;
+}
+
+export const activeIngestJobs = new Map<string, IngestJob>();
+
+// Clean up old jobs after 1 hour
+setInterval(() => {
+  const oneHourAgo = Date.now() - 60 * 60 * 1000;
+  for (const [id, job] of activeIngestJobs.entries()) {
+    if (job.startedAt < oneHourAgo) {
+      activeIngestJobs.delete(id);
+    }
+  }
+}, 10 * 60 * 1000);
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
@@ -170,34 +197,117 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       return;
     }
 
-    const ingestionReport = await ingestContactsBatch(rawContacts, broadcastId, targetCompany);
+    const jobId = crypto.randomUUID();
+    const userId = req.user!.id;
+    const userIp = req.ip;
 
-    await logAdminAudit(
-      req.user!.id,
-      'INGEST_CONTACTS',
-      'campaign_master_leads',
-      undefined,
-      {
-        total: ingestionReport.totalProcessed,
-        new: ingestionReport.newInserted,
-        updated: ingestionReport.updatedExisting,
-        urnMapped: ingestionReport.matchedUrnCount,
-        company: targetCompany,
-      },
-      req.ip
-    );
+    const job: IngestJob = {
+      jobId,
+      targetCompany,
+      totalRows: rawContacts.length,
+      processed: 0,
+      percent: 0,
+      newInserted: 0,
+      updatedExisting: 0,
+      status: 'processing',
+      startedAt: Date.now(),
+    };
+    activeIngestJobs.set(jobId, job);
 
-    emitBroadcastUpdate({ type: 'LEADS_UPDATED', report: ingestionReport });
-
-    res.json({
+    // Return immediate HTTP 202 response to prevent any cloud proxy timeout
+    res.status(202).json({
       success: true,
-      report: ingestionReport,
-      message: `Processed ${ingestionReport.totalProcessed} contacts for ${targetCompany}. ${ingestionReport.newInserted} new, ${ingestionReport.updatedExisting} updated, ${ingestionReport.matchedUrnCount} mapped to OmniReach URNs.`,
+      jobId,
+      status: 'processing',
+      totalRows: rawContacts.length,
+      message: `Received ${rawContacts.length.toLocaleString()} contacts. Ingestion started in background.`,
+    });
+
+    // Run ingestion in background asynchronously with real-time WebSocket progress updates
+    setImmediate(async () => {
+      try {
+        const ingestionReport = await ingestContactsBatch(
+          rawContacts,
+          broadcastId,
+          targetCompany,
+          (prog) => {
+            job.processed = prog.processed;
+            job.percent = prog.percent;
+            job.newInserted = prog.newInserted;
+            job.updatedExisting = prog.updatedExisting;
+
+            emitBroadcastUpdate({
+              type: 'INGEST_PROGRESS',
+              jobId,
+              processed: prog.processed,
+              total: prog.total,
+              percent: prog.percent,
+              newInserted: prog.newInserted,
+              updatedExisting: prog.updatedExisting,
+              status: 'processing',
+            });
+          }
+        );
+
+        job.status = 'completed';
+        job.percent = 100;
+        job.report = ingestionReport;
+
+        await logAdminAudit(
+          userId,
+          'INGEST_CONTACTS',
+          'campaign_master_leads',
+          undefined,
+          {
+            total: ingestionReport.totalProcessed,
+            new: ingestionReport.newInserted,
+            updated: ingestionReport.updatedExisting,
+            urnMapped: ingestionReport.matchedUrnCount,
+            company: targetCompany,
+          },
+          userIp
+        );
+
+        emitBroadcastUpdate({
+          type: 'INGEST_PROGRESS',
+          jobId,
+          percent: 100,
+          processed: rawContacts.length,
+          total: rawContacts.length,
+          newInserted: ingestionReport.newInserted,
+          updatedExisting: ingestionReport.updatedExisting,
+          status: 'completed',
+          report: ingestionReport,
+        });
+
+        emitBroadcastUpdate({ type: 'LEADS_UPDATED', report: ingestionReport });
+      } catch (err: any) {
+        console.error('Background ingestion error:', err);
+        job.status = 'failed';
+        job.error = err.message;
+        emitBroadcastUpdate({
+          type: 'INGEST_PROGRESS',
+          jobId,
+          status: 'failed',
+          error: err.message,
+        });
+      }
     });
   } catch (err: any) {
     console.error('Upload ingestion error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
+});
+
+// Endpoint to poll job status
+router.get('/upload-status/:jobId', authenticateToken, (req: AuthenticatedRequest, res): void => {
+  const jobId = String(req.params.jobId);
+  const job = activeIngestJobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ success: false, message: 'Ingestion job not found.' });
+    return;
+  }
+  res.json({ success: true, job });
 });
 
 // 3. Batch Delete Contacts (Superadmin Only)

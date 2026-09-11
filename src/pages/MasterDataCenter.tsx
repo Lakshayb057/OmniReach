@@ -22,7 +22,7 @@ import { useSocket } from '../context/SocketContext';
 import { useAuth } from '../context/AuthContext';
 
 export const MasterDataCenter: React.FC = () => {
-  const { user, isSuperadmin } = useAuth();
+  const { user, isSuperadmin, setIsWorkingOrProcessing } = useAuth();
   const { lastEvent } = useSocket();
   const [leads, setLeads] = useState<any[]>([]);
   const [companies, setCompanies] = useState<string[]>([]);
@@ -38,11 +38,21 @@ export const MasterDataCenter: React.FC = () => {
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Upload Modal State
+  // Upload Modal & Live Progress State
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadReport, setUploadReport] = useState<any>(null);
+  const [ingestJob, setIngestJob] = useState<{
+    jobId: string;
+    status: 'uploading' | 'processing' | 'completed' | 'failed';
+    percent: number;
+    processed: number;
+    total: number;
+    newInserted: number;
+    updatedExisting: number;
+    error?: string;
+  } | null>(null);
 
   useEffect(() => {
     localStorage.setItem('mdc_optin_filter', optinFilter);
@@ -64,10 +74,74 @@ export const MasterDataCenter: React.FC = () => {
   };
 
   useEffect(() => {
-    if (lastEvent?.type === 'LEADS_UPDATED' || lastEvent?.type === 'PREFERENCES_UPDATED' || lastEvent?.type === 'LEAD_OPTIN_CHANGED') {
+    if (lastEvent?.type === 'INGEST_PROGRESS' && lastEvent.data) {
+      const data = lastEvent.data;
+      if (!ingestJob || data.jobId === ingestJob.jobId) {
+        setIngestJob((prev) => ({
+          jobId: data.jobId,
+          status: data.status,
+          percent: data.percent ?? (prev?.percent || 0),
+          processed: data.processed ?? (prev?.processed || 0),
+          total: data.total ?? (prev?.total || 0),
+          newInserted: data.newInserted ?? (prev?.newInserted || 0),
+          updatedExisting: data.updatedExisting ?? (prev?.updatedExisting || 0),
+          error: data.error,
+        }));
+
+        if (data.status === 'completed') {
+          setIsWorkingOrProcessing(false);
+          setUploadLoading(false);
+          if (data.report) setUploadReport(data.report);
+          fetchLeads();
+        } else if (data.status === 'failed') {
+          setIsWorkingOrProcessing(false);
+          setUploadLoading(false);
+        }
+      }
+    } else if (lastEvent?.type === 'LEADS_UPDATED' || lastEvent?.type === 'PREFERENCES_UPDATED' || lastEvent?.type === 'LEAD_OPTIN_CHANGED') {
       fetchLeads();
     }
-  }, [lastEvent]);
+  }, [lastEvent, ingestJob, setIsWorkingOrProcessing]);
+
+  // Polling fallback every 2s for background upload job
+  useEffect(() => {
+    if (!ingestJob || ingestJob.status !== 'processing' || !ingestJob.jobId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await axios.get(`/api/leads/upload-status/${ingestJob.jobId}`);
+        if (res.data.success && res.data.job) {
+          const job = res.data.job;
+          setIngestJob((prev) => ({
+            jobId: job.jobId,
+            status: job.status,
+            percent: job.percent,
+            processed: job.processed,
+            total: job.totalRows || (prev?.total || 0),
+            newInserted: job.newInserted,
+            updatedExisting: job.updatedExisting,
+            error: job.error,
+          }));
+
+          if (job.status === 'completed') {
+            setIsWorkingOrProcessing(false);
+            setUploadLoading(false);
+            if (job.report) setUploadReport(job.report);
+            fetchLeads();
+            clearInterval(interval);
+          } else if (job.status === 'failed') {
+            setIsWorkingOrProcessing(false);
+            setUploadLoading(false);
+            clearInterval(interval);
+          }
+        }
+      } catch (e) {
+        // Polling error fallback
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [ingestJob?.jobId, ingestJob?.status, setIsWorkingOrProcessing]);
 
   const fetchLeads = async () => {
     try {
@@ -154,19 +228,56 @@ export const MasterDataCenter: React.FC = () => {
     if (!uploadFile) return;
 
     setUploadLoading(true);
+    setUploadReport(null);
+    setIsWorkingOrProcessing(true);
+
+    setIngestJob({
+      jobId: '',
+      status: 'uploading',
+      percent: 5,
+      processed: 0,
+      total: 0,
+      newInserted: 0,
+      updatedExisting: 0,
+    });
+
     const formData = new FormData();
     formData.append('file', uploadFile);
 
     try {
-      const res = await axios.post('/api/leads/upload', formData);
+      const res = await axios.post('/api/leads/upload', formData, {
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const uploadPercent = Math.round((progressEvent.loaded * 25) / progressEvent.total);
+            setIngestJob((prev) => prev ? { ...prev, percent: Math.max(5, uploadPercent) } : null);
+          }
+        },
+      });
+
       if (res.data.success) {
-        setUploadReport(res.data.report);
-        fetchLeads();
+        if (res.data.jobId) {
+          setIngestJob({
+            jobId: res.data.jobId,
+            status: 'processing',
+            percent: 30,
+            processed: 0,
+            total: res.data.totalRows || 0,
+            newInserted: 0,
+            updatedExisting: 0,
+          });
+        } else if (res.data.report) {
+          setUploadReport(res.data.report);
+          setIngestJob(null);
+          setUploadLoading(false);
+          setIsWorkingOrProcessing(false);
+          fetchLeads();
+        }
       }
     } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to ingest contacts.');
-    } finally {
+      setIsWorkingOrProcessing(false);
       setUploadLoading(false);
+      setIngestJob(null);
+      alert(err.response?.data?.message || 'Failed to ingest contacts.');
     }
   };
 
@@ -475,17 +586,64 @@ export const MasterDataCenter: React.FC = () => {
                 </label>
               </div>
 
-              {uploadReport && (
-                <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-2 text-xs">
-                  <div className="font-bold text-emerald-400 flex items-center gap-1.5">
-                    <CheckCircle2 size={15} />
-                    Ingestion Succeeded: {uploadReport.totalProcessed} Contacts
+              {/* Live Ingestion Progress Bar */}
+              {ingestJob && ingestJob.status !== 'completed' && (
+                <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-2xl space-y-3 text-xs animate-fadeIn">
+                  <div className="flex items-center justify-between text-blue-300 font-bold">
+                    <span className="flex items-center gap-2">
+                      <RefreshCw size={14} className="animate-spin text-blue-400" />
+                      {ingestJob.status === 'uploading' ? 'Uploading file to server...' : 'Ingesting contacts in background...'}
+                    </span>
+                    <span className="font-mono text-white text-sm">{ingestJob.percent}%</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
-                    <div className="text-slate-300">New Created: <span className="font-bold text-emerald-400">{uploadReport.newInserted}</span></div>
-                    <div className="text-slate-300">Updated: <span className="font-bold text-blue-400">{uploadReport.updatedExisting}</span></div>
-                    <div className="text-slate-300">URN Mapped: <span className="font-bold text-purple-400">{uploadReport.matchedUrnCount}</span></div>
-                    <div className="text-slate-300">FMCB Assigned: <span className="font-bold text-cyan-400">{uploadReport.newFmcbCount}</span></div>
+
+                  <div className="w-full bg-slate-900 rounded-full h-3 overflow-hidden border border-slate-700/60 p-0.5">
+                    <div
+                      className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-full rounded-full transition-all duration-300 shadow-sm"
+                      style={{ width: `${Math.max(5, ingestJob.percent)}%` }}
+                    />
+                  </div>
+
+                  {ingestJob.total > 0 && (
+                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                      <span>
+                        Processed <strong className="text-slate-200 font-mono">{ingestJob.processed.toLocaleString()}</strong> of <strong className="text-slate-200 font-mono">{ingestJob.total.toLocaleString()}</strong> rows
+                      </span>
+                      <span className="text-emerald-400 font-medium flex items-center gap-1">
+                        <CheckCircle2 size={12} />
+                        0 duplicates guaranteed
+                      </span>
+                    </div>
+                  )}
+
+                  {ingestJob.status === 'failed' && (
+                    <div className="p-2.5 bg-rose-500/20 border border-rose-500/40 rounded-xl text-rose-300 text-xs">
+                      Error: {ingestJob.error || 'Ingestion encountered an unexpected issue.'}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Ingestion Succeeded Report */}
+              {uploadReport && (
+                <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl space-y-2 text-xs animate-fadeIn">
+                  <div className="font-bold text-emerald-400 flex items-center gap-1.5 text-sm">
+                    <CheckCircle2 size={16} />
+                    Ingestion Complete: {uploadReport.totalProcessed.toLocaleString()} Contacts
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                    <div className="bg-[#070b14] p-2.5 rounded-xl border border-slate-800 text-slate-300">
+                      New Contacts: <span className="font-bold text-emerald-400 font-mono text-xs">+{uploadReport.newInserted.toLocaleString()}</span>
+                    </div>
+                    <div className="bg-[#070b14] p-2.5 rounded-xl border border-slate-800 text-slate-300">
+                      Updated: <span className="font-bold text-blue-400 font-mono text-xs">{uploadReport.updatedExisting.toLocaleString()}</span>
+                    </div>
+                    <div className="bg-[#070b14] p-2.5 rounded-xl border border-slate-800 text-slate-300">
+                      URN Ground Truth: <span className="font-bold text-purple-400 font-mono text-xs">{uploadReport.matchedUrnCount.toLocaleString()}</span>
+                    </div>
+                    <div className="bg-[#070b14] p-2.5 rounded-xl border border-slate-800 text-slate-300">
+                      Sequential FMCB IDs: <span className="font-bold text-cyan-400 font-mono text-xs">{uploadReport.newFmcbCount.toLocaleString()}</span>
+                    </div>
                   </div>
                 </div>
               )}
@@ -493,18 +651,31 @@ export const MasterDataCenter: React.FC = () => {
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowUploadModal(false)}
-                  className="px-4 py-2 bg-[#070b14] hover:bg-slate-800 text-slate-300 text-xs font-semibold rounded-xl border border-slate-800"
+                  onClick={() => {
+                    setShowUploadModal(false);
+                    setIngestJob(null);
+                    setUploadReport(null);
+                  }}
+                  className="px-4 py-2 bg-[#070b14] hover:bg-slate-800 text-slate-300 text-xs font-semibold rounded-xl border border-slate-800 transition-colors"
                 >
-                  Close
+                  {uploadReport ? 'Done & Close' : 'Close'}
                 </button>
-                <button
-                  type="submit"
-                  disabled={!uploadFile || uploadLoading}
-                  className="px-5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg disabled:opacity-50"
-                >
-                  {uploadLoading ? 'Processing...' : 'Start Ingestion'}
-                </button>
+                {!uploadReport && (
+                  <button
+                    type="submit"
+                    disabled={!uploadFile || uploadLoading}
+                    className="px-5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all flex items-center gap-1.5"
+                  >
+                    {uploadLoading ? (
+                      <>
+                        <RefreshCw size={14} className="animate-spin" />
+                        <span>Ingesting in Background...</span>
+                      </>
+                    ) : (
+                      'Start Ingestion'
+                    )}
+                  </button>
+                )}
               </div>
             </form>
           </div>

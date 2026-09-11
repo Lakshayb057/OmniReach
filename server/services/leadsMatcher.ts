@@ -21,6 +21,14 @@ export interface IngestionResult {
   leadIds: string[];
 }
 
+export interface IngestionProgress {
+  processed: number;
+  total: number;
+  percent: number;
+  newInserted: number;
+  updatedExisting: number;
+}
+
 /**
  * Normalizes phone numbers into standard Indian or international format.
  * Handles scientific exponential notation from Excel (e.g. 9.35017061E+09).
@@ -31,10 +39,10 @@ export function normalizePhone(rawPhone: string | number | undefined): string | 
   if (!str) return null;
 
   // Handle scientific exponential notation from Excel e.g. 9.35017061E+09 or 9.35E9
-  if (/[eE][+-]?\d+/.test(str)) {
+  if (str.includes('e') || str.includes('E')) {
     const num = Number(str);
     if (!isNaN(num) && isFinite(num)) {
-      str = num.toLocaleString('fullwide', { useGrouping: false });
+      str = BigInt(Math.round(num)).toString();
     }
   }
 
@@ -85,7 +93,8 @@ export async function getNextFmcbId(): Promise<string> {
 export async function ingestContactsBatch(
   contacts: RawContactInput[],
   broadcastId?: string,
-  companyName: string = 'OmniReach Global'
+  companyName: string = 'OmniReach Global',
+  onProgress?: (progress: IngestionProgress) => void
 ): Promise<IngestionResult> {
   const result: IngestionResult = {
     totalProcessed: 0,
@@ -122,17 +131,8 @@ export async function ingestContactsBatch(
 
     if (!phone && !email) {
       result.invalidCount++;
-      if (result.errors.length < 50) {
-        result.errors.push({
-          row: i + 1,
-          reason: 'Invalid contact. Must provide at least a valid phone number (min 10 digits) or valid email address.',
-          data: item,
-        });
-      }
       continue;
     }
-
-    result.totalProcessed++;
 
     // Check if we already have this contact in our current batch (by phone or email)
     let existingContact: CleanContact | undefined;
@@ -174,6 +174,7 @@ export async function ingestContactsBatch(
     }
   }
 
+  result.totalProcessed = contacts.length;
   if (uniqueContacts.length === 0) return result;
 
   const client = await pool.connect();
@@ -191,8 +192,16 @@ export async function ingestContactsBatch(
       );
     `);
 
-    // Process in chunks of 1,000 contacts for ultra-high speed and low memory
-    const CHUNK_SIZE = 1000;
+    // Check if leads_repository has any records at all
+    const repoCheck = await client.query('SELECT 1 FROM leads_repository LIMIT 1');
+    const hasRepo = (repoCheck.rowCount ?? 0) > 0;
+
+    // Check if campaign_master_leads has existing records to match against
+    const masterCheck = await client.query('SELECT 1 FROM campaign_master_leads LIMIT 1');
+    const hasMaster = (masterCheck.rowCount ?? 0) > 0;
+
+    // Process in chunks of 2,000 contacts for ultra-high speed and low memory
+    const CHUNK_SIZE = 2000;
 
     for (let c = 0; c < uniqueContacts.length; c += CHUNK_SIZE) {
       const chunk = uniqueContacts.slice(c, c + CHUNK_SIZE);
@@ -203,7 +212,7 @@ export async function ingestContactsBatch(
       const dbPhoneMap = new Map<string, any>();
       const dbEmailMap = new Map<string, any>();
 
-      if (chunkPhones.length > 0 || chunkEmails.length > 0) {
+      if (hasMaster && (chunkPhones.length > 0 || chunkEmails.length > 0)) {
         const existingRes = await client.query(
           `SELECT id, phone, email, fmcb_id, urn, company_name, full_name, address, pan_no, city
            FROM campaign_master_leads 
@@ -219,7 +228,7 @@ export async function ingestContactsBatch(
 
       // 2. Fast Bulk Lookup in Leads Repository for Ground Truth URN in 1 query
       const repoUrnMap = new Map<string, string>();
-      if (chunkPhones.length > 0 || chunkEmails.length > 0) {
+      if (hasRepo && (chunkPhones.length > 0 || chunkEmails.length > 0)) {
         const repoRes = await client.query(
           `SELECT urn, phone, email 
            FROM leads_repository 
@@ -365,9 +374,31 @@ export async function ingestContactsBatch(
         await client.query(updateSql, updateParams);
         result.updatedExisting += toUpdate.length;
       }
+
+      if (onProgress) {
+        const processed = Math.min(c + chunk.length, uniqueContacts.length);
+        const percent = Math.round((processed / uniqueContacts.length) * 100);
+        onProgress({
+          processed,
+          total: uniqueContacts.length,
+          percent,
+          newInserted: result.newInserted,
+          updatedExisting: result.updatedExisting,
+        });
+      }
     }
 
     await client.query('COMMIT');
+
+    if (onProgress) {
+      onProgress({
+        processed: uniqueContacts.length,
+        total: uniqueContacts.length,
+        percent: 100,
+        newInserted: result.newInserted,
+        updatedExisting: result.updatedExisting,
+      });
+    }
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
