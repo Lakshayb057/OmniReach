@@ -268,7 +268,35 @@ router.put('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Pr
   }
 });
 
-// 4. Delete Template (Company Isolated or Superadmin)
+// 4a. Batch Delete Templates (Company Isolated or Superadmin)
+const handleBatchDeleteTemplates = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { template_ids } = req.body;
+  if (!Array.isArray(template_ids) || template_ids.length === 0) {
+    res.status(400).json({ success: false, message: 'No template IDs provided for deletion.' });
+    return;
+  }
+  try {
+    let deleteQuery = `DELETE FROM campaign_templates WHERE id = ANY($1::uuid[])`;
+    const params: any[] = [template_ids];
+
+    if (req.user?.role !== 'superadmin') {
+      deleteQuery += ` AND company_name = $2`;
+      params.push(req.user?.company_name || 'Independent Enterprise');
+    }
+
+    const delRes = await query(deleteQuery, params);
+    await logAdminAudit(req.user!.id, 'BATCH_DELETE_TEMPLATES', 'campaign_templates', undefined, { count: delRes.rowCount }, req.ip);
+
+    res.json({ success: true, message: `Successfully deleted ${delRes.rowCount || template_ids.length} template(s).`, count: delRes.rowCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.delete('/batch-delete', authenticateToken, handleBatchDeleteTemplates);
+router.post('/batch-delete', authenticateToken, handleBatchDeleteTemplates);
+
+// 4b. Delete Single Template (Company Isolated or Superadmin)
 router.delete('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {

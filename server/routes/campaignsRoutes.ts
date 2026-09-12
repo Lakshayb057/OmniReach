@@ -348,7 +348,26 @@ router.post('/:id/retrigger', authenticateToken, async (req: AuthenticatedReques
   }
 });
 
-// 8. Delete Campaign (Superadmin Only)
+// 8a. Batch Delete Campaigns (Superadmin Only)
+const handleBatchDeleteCampaigns = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { campaign_ids } = req.body;
+  if (!Array.isArray(campaign_ids) || campaign_ids.length === 0) {
+    res.status(400).json({ success: false, message: 'No campaign IDs provided for deletion.' });
+    return;
+  }
+  try {
+    const delRes = await query(`DELETE FROM campaign_broadcasts WHERE id = ANY($1::uuid[])`, [campaign_ids]);
+    await logAdminAudit(req.user!.id, 'BATCH_DELETE_CAMPAIGNS', 'campaign_broadcasts', undefined, { count: delRes.rowCount }, req.ip);
+    res.json({ success: true, message: `Successfully deleted ${delRes.rowCount || campaign_ids.length} campaign(s).`, count: delRes.rowCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.delete('/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteCampaigns);
+router.post('/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteCampaigns);
+
+// 8b. Delete Single Campaign (Superadmin Only)
 router.delete('/:id', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {

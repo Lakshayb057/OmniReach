@@ -13,6 +13,7 @@ export interface OutboundMessageOptions {
   media_url?: string;
   buttons_json?: any[];
   isBot?: boolean;
+  gateway_id?: string;
 }
 
 export interface InboundMessagePayload {
@@ -20,6 +21,7 @@ export interface InboundMessagePayload {
   text: string;
   contact_name?: string;
   company_name?: string;
+  gateway_id?: string;
   whatsapp_message_id?: string;
   media_url?: string;
   message_type?: string;
@@ -51,7 +53,8 @@ export async function findOrCreateConversation(
   phone: string,
   contactName?: string,
   companyName: string = 'OmniReach Global',
-  masterLeadId?: string
+  masterLeadId?: string,
+  gatewayId?: string
 ) {
   const cleanPhone = normalizePhone(phone) || phone;
 
@@ -67,6 +70,10 @@ export async function findOrCreateConversation(
   );
 
   if (convRes.rows.length > 0) {
+    if (gatewayId && !convRes.rows[0].last_gateway_id) {
+      await query(`UPDATE conversations SET last_gateway_id = $1 WHERE id = $2`, [gatewayId, convRes.rows[0].id]);
+      convRes.rows[0].last_gateway_id = gatewayId;
+    }
     return convRes.rows[0];
   }
 
@@ -90,10 +97,10 @@ export async function findOrCreateConversation(
 
   // 3. Insert new conversation with 24-hour window
   const insertRes = await query(
-    `INSERT INTO conversations (company_name, master_lead_id, phone, contact_name, status, priority, session_expires_at, unread_count)
-     VALUES ($1, $2, $3, $4, 'open', 'medium', CURRENT_TIMESTAMP + INTERVAL '24 hours', 0)
+    `INSERT INTO conversations (company_name, master_lead_id, phone, contact_name, status, priority, session_expires_at, unread_count, last_gateway_id)
+     VALUES ($1, $2, $3, $4, 'open', 'medium', CURRENT_TIMESTAMP + INTERVAL '24 hours', 0, $5)
      RETURNING *`,
-    [companyName, leadId || null, cleanPhone, resolvedName]
+    [companyName, leadId || null, cleanPhone, resolvedName, gatewayId || null]
   );
 
   return insertRes.rows[0];
@@ -107,7 +114,7 @@ export async function saveInboundMessage(payload: InboundMessagePayload) {
   const company = payload.company_name || 'OmniReach Global';
 
   // 1. Find or create conversation
-  const conv = await findOrCreateConversation(cleanPhone, payload.contact_name, company);
+  const conv = await findOrCreateConversation(cleanPhone, payload.contact_name, company, undefined, payload.gateway_id);
 
   const wamid = payload.whatsapp_message_id || `wamid_in_${Date.now()}_${Math.random().toString(36).substring(7)}`;
   const msgType = payload.message_type || 'text';
@@ -193,9 +200,10 @@ export async function saveInboundMessage(payload: InboundMessagePayload) {
            session_expires_at = CURRENT_TIMESTAMP + INTERVAL '24 hours',
            unread_count = unread_count + 1,
            status = $2,
+           last_gateway_id = COALESCE($3, last_gateway_id),
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $3`,
-      [content.slice(0, 500), newStatus, conv.id]
+       WHERE id = $4`,
+      [content.slice(0, 500), newStatus, payload.gateway_id || null, conv.id]
     );
   }
 
@@ -215,11 +223,14 @@ export async function saveInboundMessage(payload: InboundMessagePayload) {
     message: newMsg,
     phone: cleanPhone,
     contact_name: conv.contact_name,
+    gateway_id: payload.gateway_id,
+    company_name: company,
   });
 
   emitBroadcastUpdate({
     type: 'CONVERSATION_UPDATED',
     conversation_id: conv.id,
+    company_name: company,
   });
 
   return { conversation: conv, message: newMsg };
@@ -249,16 +260,41 @@ export async function sendOutboundMessage(
   const conv = convRes.rows[0];
   const activeSession = isSessionActive(conv.session_expires_at);
 
-  // 2. Resolve WhatsApp Gateway Credentials & Type
-  const compName = conv.company_name || agentUser?.company_name || 'OmniReach Global';
-  const gwRes = await query(
-    `SELECT id, credentials, type FROM gateways_config 
-     WHERE (company_name = $1 OR company_name = 'OmniReach Global') 
-       AND type LIKE 'whatsapp%' AND is_active = true 
-     ORDER BY (company_name = $1) DESC, is_default DESC LIMIT 1`,
-    [compName]
-  );
-  const waGw = gwRes.rows[0];
+  // 2. Resolve WhatsApp Gateway Credentials & Type (Supports Multi-Gateway Selection)
+  let waGw: any = null;
+  if (options.gateway_id) {
+    const specificGwRes = await query(
+      `SELECT id, credentials, type FROM gateways_config WHERE id = $1 AND is_active = true`,
+      [options.gateway_id]
+    );
+    if (specificGwRes.rows.length > 0) {
+      waGw = specificGwRes.rows[0];
+    }
+  }
+
+  if (!waGw) {
+    const compName = conv.company_name || agentUser?.company_name || 'OmniReach Global';
+    if (conv.last_gateway_id) {
+      const prevGwRes = await query(
+        `SELECT id, credentials, type FROM gateways_config WHERE id = $1 AND is_active = true`,
+        [conv.last_gateway_id]
+      );
+      if (prevGwRes.rows.length > 0) {
+        waGw = prevGwRes.rows[0];
+      }
+    }
+    if (!waGw) {
+      const gwRes = await query(
+        `SELECT id, credentials, type FROM gateways_config 
+         WHERE (company_name = $1 OR company_name = 'OmniReach Global') 
+           AND type LIKE 'whatsapp%' AND is_active = true 
+         ORDER BY (company_name = $1) DESC, is_default DESC LIMIT 1`,
+        [compName]
+      );
+      waGw = gwRes.rows[0];
+    }
+  }
+
   const waCredentials = waGw?.credentials || {};
   const waType = waGw?.type || 'whatsapp_meta';
   const waId = waGw?.id;
@@ -275,7 +311,7 @@ export async function sendOutboundMessage(
   const leadContext = {
     id: conv.master_lead_id || conv.id,
     urn: conv.urn || 'URN-WHATSAPP',
-    fmcb_id: conv.fmcb_id || 'FMCB00001',
+    fmcb_id: conv.fmcb_id || 'OMCB00001',
     full_name: conv.contact_name,
     phone: conv.phone,
     email: conv.lead_email,
@@ -322,15 +358,16 @@ export async function sendOutboundMessage(
 
   const newMsg = msgRes.rows[0];
 
-  // 6. Update conversation state (mark unread as 0 since agent responded)
+  // 6. Update conversation state (mark unread as 0 since agent responded, preserve gateway used)
   await query(
     `UPDATE conversations 
      SET last_message_text = $1,
          last_message_at = CURRENT_TIMESTAMP,
          unread_count = 0,
+         last_gateway_id = COALESCE($3, last_gateway_id),
          updated_at = CURRENT_TIMESTAMP
      WHERE id = $2`,
-    [options.content.slice(0, 500), conv.id]
+    [options.content.slice(0, 500), conv.id, waGw?.id || null]
   );
 
   // 7. Emit real-time events
@@ -338,11 +375,13 @@ export async function sendOutboundMessage(
     type: 'INBOX_MESSAGE_SENT',
     conversation_id: conv.id,
     message: newMsg,
+    company_name: conv.company_name,
   });
 
   emitBroadcastUpdate({
     type: 'CONVERSATION_UPDATED',
     conversation_id: conv.id,
+    company_name: conv.company_name,
   });
 
   return newMsg;
@@ -465,4 +504,64 @@ export async function handoverToHumanAgent(
   });
 
   return updatedConv;
+}
+
+/**
+ * Delete a single conversation from the WhatsApp Live Box
+ */
+export async function deleteConversation(conversationId: string, user?: any) {
+  let querySql = `DELETE FROM conversations WHERE id = $1`;
+  const params: any[] = [conversationId];
+
+  if (user?.role !== 'superadmin') {
+    querySql += ` AND company_name = $2`;
+    params.push(user?.company_name || 'Independent Enterprise');
+  }
+
+  querySql += ` RETURNING id, company_name, contact_name, phone`;
+  const delRes = await query(querySql, params);
+
+  if (delRes.rows.length === 0) {
+    throw new Error('Conversation not found or access denied.');
+  }
+
+  const deletedConv = delRes.rows[0];
+
+  emitBroadcastUpdate({
+    type: 'CONVERSATION_DELETED',
+    conversation_id: conversationId,
+    company_name: deletedConv.company_name,
+  });
+
+  return deletedConv;
+}
+
+/**
+ * Bulk delete conversations from the WhatsApp Live Box
+ */
+export async function batchDeleteConversations(conversationIds: string[], user?: any) {
+  if (!Array.isArray(conversationIds) || conversationIds.length === 0) {
+    return { count: 0 };
+  }
+
+  let querySql = `DELETE FROM conversations WHERE id = ANY($1::uuid[])`;
+  const params: any[] = [conversationIds];
+
+  if (user?.role !== 'superadmin') {
+    querySql += ` AND company_name = $2`;
+    params.push(user?.company_name || 'Independent Enterprise');
+  }
+
+  querySql += ` RETURNING id, company_name`;
+  const delRes = await query(querySql, params);
+
+  for (const row of delRes.rows) {
+    emitBroadcastUpdate({
+      type: 'CONVERSATION_DELETED',
+      conversation_id: row.id,
+      company_name: row.company_name,
+    });
+  }
+
+  return { count: delRes.rowCount || delRes.rows.length };
 }

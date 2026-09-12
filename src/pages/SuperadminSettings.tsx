@@ -111,6 +111,10 @@ export const SuperadminSettings: React.FC = () => {
   const [syncMetaFeedback, setSyncMetaFeedback] = useState<string | null>(null);
   const [previewModalTemplate, setPreviewModalTemplate] = useState<any | null>(null);
   const [copiedTemplateId, setCopiedTemplateId] = useState<string | null>(null);
+  const [selectedGatewayIds, setSelectedGatewayIds] = useState<string[]>([]);
+  const [isDeletingGateways, setIsDeletingGateways] = useState(false);
+  const [selectedSuperadminTemplateIds, setSelectedSuperadminTemplateIds] = useState<string[]>([]);
+  const [isDeletingSuperadminTemplates, setIsDeletingSuperadminTemplates] = useState(false);
 
   // Create Template Modal State
   const [showCreateTemplateModal, setShowCreateTemplateModal] = useState(false);
@@ -341,10 +345,46 @@ export const SuperadminSettings: React.FC = () => {
     try {
       const res = await axios.delete(`/api/gateways/${id}`);
       if (res.data.success) {
+        setSelectedGatewayIds((prev) => prev.filter((gId) => gId !== id));
         fetchGateways();
       }
     } catch (err: any) {
       alert(err.response?.data?.message || 'Failed to delete gateway.');
+    }
+  };
+
+  const handleToggleSelectGateway = (id: string) => {
+    setSelectedGatewayIds((prev) =>
+      prev.includes(id) ? prev.filter((gId) => gId !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllGateways = () => {
+    if (selectedGatewayIds.length === gateways.length) {
+      setSelectedGatewayIds([]);
+    } else {
+      setSelectedGatewayIds(gateways.map((g) => g.id));
+    }
+  };
+
+  const handleBulkDeleteGateways = async () => {
+    if (selectedGatewayIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete all ${selectedGatewayIds.length} selected gateway(s)?`)) {
+      return;
+    }
+    try {
+      setIsDeletingGateways(true);
+      const res = await axios.post('/api/gateways/batch-delete', {
+        gateway_ids: selectedGatewayIds,
+      });
+      if (res.data.success) {
+        setSelectedGatewayIds([]);
+        fetchGateways();
+      }
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to bulk delete gateways.');
+    } finally {
+      setIsDeletingGateways(false);
     }
   };
 
@@ -505,10 +545,46 @@ export const SuperadminSettings: React.FC = () => {
     try {
       const res = await axios.delete(`/api/templates/${id}`);
       if (res.data.success) {
+        setSelectedSuperadminTemplateIds((prev) => prev.filter((tId) => tId !== id));
         fetchTemplates();
       }
     } catch (err: any) {
       alert(err.response?.data?.message || 'Failed to delete template.');
+    }
+  };
+
+  const handleToggleSelectTemplate = (id: string) => {
+    setSelectedSuperadminTemplateIds((prev) =>
+      prev.includes(id) ? prev.filter((tId) => tId !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllTemplates = () => {
+    if (selectedSuperadminTemplateIds.length === templates.length) {
+      setSelectedSuperadminTemplateIds([]);
+    } else {
+      setSelectedSuperadminTemplateIds(templates.map((t) => t.id));
+    }
+  };
+
+  const handleBulkDeleteTemplates = async () => {
+    if (selectedSuperadminTemplateIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete all ${selectedSuperadminTemplateIds.length} selected template(s)?`)) {
+      return;
+    }
+    try {
+      setIsDeletingSuperadminTemplates(true);
+      const res = await axios.post('/api/templates/batch-delete', {
+        template_ids: selectedSuperadminTemplateIds,
+      });
+      if (res.data.success) {
+        setSelectedSuperadminTemplateIds([]);
+        fetchTemplates();
+      }
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to bulk delete templates.');
+    } finally {
+      setIsDeletingSuperadminTemplates(false);
     }
   };
 
@@ -863,6 +939,18 @@ export const SuperadminSettings: React.FC = () => {
                   </button>
                 )}
 
+                {selectedSuperadminTemplateIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleBulkDeleteTemplates}
+                    disabled={isDeletingSuperadminTemplates}
+                    className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/25 flex items-center gap-1.5 transition-all cursor-pointer animate-fadeIn"
+                  >
+                    <Trash2 size={14} />
+                    <span>Delete ({selectedSuperadminTemplateIds.length}) Selected</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => {
@@ -899,31 +987,55 @@ export const SuperadminSettings: React.FC = () => {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {filteredTemplates.map((tmpl) => {
-                  const isWhatsApp = tmpl.channel === 'whatsapp';
-                  const isApproved = tmpl.meta_status === 'APPROVED' || tmpl.meta_status === 'Active';
-                  const isPending = tmpl.meta_status === 'PENDING';
-                  const isRejected = tmpl.meta_status === 'REJECTED';
+              <>
+                <div className="flex items-center justify-between p-2.5 bg-[#0f172a] border border-slate-800 rounded-xl text-xs">
+                  <label className="flex items-center gap-2 text-slate-300 font-semibold cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={filteredTemplates.length > 0 && selectedSuperadminTemplateIds.length === filteredTemplates.length}
+                      onChange={handleSelectAllTemplates}
+                      className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <span>Select All ({filteredTemplates.length})</span>
+                  </label>
+                  {selectedSuperadminTemplateIds.length > 0 && (
+                    <span className="text-cyan-400 font-bold">
+                      {selectedSuperadminTemplateIds.length} template(s) selected
+                    </span>
+                  )}
+                </div>
 
-                  return (
-                    <div
-                      key={tmpl.id}
-                      className="bg-[#0f172a] border border-slate-800 hover:border-cyan-500/40 rounded-3xl p-5 shadow-xl flex flex-col justify-between space-y-4 transition-all hover:translate-y-[-2px]"
-                    >
-                      <div className="space-y-3.5">
-                        {/* Top Badges */}
-                        <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            {isWhatsApp ? (
-                              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                                {tmpl.category || 'MARKETING'}
-                              </span>
-                            ) : (
-                              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/30">
-                                HTML TEMPLATE
-                              </span>
-                            )}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {filteredTemplates.map((tmpl) => {
+                    const isWhatsApp = tmpl.channel === 'whatsapp';
+                    const isApproved = tmpl.meta_status === 'APPROVED' || tmpl.meta_status === 'Active';
+                    const isPending = tmpl.meta_status === 'PENDING';
+                    const isRejected = tmpl.meta_status === 'REJECTED';
+
+                    return (
+                      <div
+                        key={tmpl.id}
+                        className="bg-[#0f172a] border border-slate-800 hover:border-cyan-500/40 rounded-3xl p-5 shadow-xl flex flex-col justify-between space-y-4 transition-all hover:translate-y-[-2px]"
+                      >
+                        <div className="space-y-3.5">
+                          {/* Top Badges */}
+                          <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <input
+                                type="checkbox"
+                                checked={selectedSuperadminTemplateIds.includes(tmpl.id)}
+                                onChange={() => handleToggleSelectTemplate(tmpl.id)}
+                                className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer mr-1"
+                              />
+                              {isWhatsApp ? (
+                                <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                  {tmpl.category || 'MARKETING'}
+                                </span>
+                              ) : (
+                                <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-blue-500/10 text-blue-400 border border-blue-500/30">
+                                  HTML TEMPLATE
+                                </span>
+                              )}
 
                             {isWhatsApp && tmpl.meta_language && (
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-slate-400 bg-slate-800/80 border border-slate-700">
@@ -1038,7 +1150,8 @@ export const SuperadminSettings: React.FC = () => {
                   );
                 })}
               </div>
-            )}
+            </>
+          )}
           </div>
         </div>
       )}
@@ -1077,6 +1190,17 @@ export const SuperadminSettings: React.FC = () => {
             )}
 
             <div className="flex items-center gap-3">
+              {isSuperadmin && selectedGatewayIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBulkDeleteGateways}
+                  disabled={isDeletingGateways}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/25 flex items-center gap-1.5 transition-all cursor-pointer animate-fadeIn"
+                >
+                  <Trash2 size={14} />
+                  <span>Delete ({selectedGatewayIds.length}) Selected</span>
+                </button>
+              )}
               {isSuperadmin && (
                 <button
                   type="button"
@@ -1100,6 +1224,25 @@ export const SuperadminSettings: React.FC = () => {
 
           {/* Gateways Grid */}
           <div className="space-y-6">
+            {isSuperadmin && gateways.length > 0 && (
+              <div className="flex items-center justify-between p-2.5 bg-[#0f172a] border border-slate-800 rounded-xl text-xs">
+                <label className="flex items-center gap-2 text-slate-300 font-semibold cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedGatewayIds.length === gateways.length}
+                    onChange={handleSelectAllGateways}
+                    className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <span>Select All ({gateways.length})</span>
+                </label>
+                {selectedGatewayIds.length > 0 && (
+                  <span className="text-cyan-400 font-bold">
+                    {selectedGatewayIds.length} gateway(s) selected
+                  </span>
+                )}
+              </div>
+            )}
+
             {gateways.length === 0 ? (
               <div className="p-12 text-center text-slate-500 bg-[#0f172a] border border-slate-800 rounded-3xl">
                 <Key size={40} className="mx-auto mb-3 opacity-40 text-cyan-400" />
@@ -1122,6 +1265,14 @@ export const SuperadminSettings: React.FC = () => {
                     {/* Gateway Card Header */}
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800/80 pb-4">
                       <div className="flex items-center space-x-3">
+                        {isSuperadmin && (
+                          <input
+                            type="checkbox"
+                            checked={selectedGatewayIds.includes(gw.id)}
+                            onChange={() => handleToggleSelectGateway(gw.id)}
+                            className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer mr-1"
+                          />
+                        )}
                         <div
                           className={`w-10 h-10 rounded-2xl flex items-center justify-center font-bold border ${
                             gw.type.includes('whatsapp')

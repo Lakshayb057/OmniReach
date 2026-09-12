@@ -203,7 +203,35 @@ router.put('/users/:id', authenticateToken, requireSuperadmin, async (req: Authe
   }
 });
 
-// 6. Superadmin: Delete User & Cascade All Company Data Completely from PostgreSQL
+// 6a. Superadmin: Batch Delete Users (with self-deletion guard)
+const handleBatchDeleteUsers = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { user_ids } = req.body;
+  if (!Array.isArray(user_ids) || user_ids.length === 0) {
+    res.status(400).json({ success: false, message: 'No user IDs provided for deletion.' });
+    return;
+  }
+  try {
+    const currentUserId = req.user?.id;
+    const targetIds = user_ids.filter((uid: string) => uid !== currentUserId);
+
+    if (targetIds.length === 0) {
+      res.status(400).json({ success: false, message: 'Cannot delete your own superadmin account.' });
+      return;
+    }
+
+    const delRes = await query(`DELETE FROM users WHERE id = ANY($1::uuid[]) RETURNING id, email, company_name`, [targetIds]);
+    await logAdminAudit(req.user!.id, 'BATCH_DELETE_USERS', 'users', undefined, { count: delRes.rowCount }, req.ip);
+
+    res.json({ success: true, message: `Successfully deleted ${delRes.rowCount || targetIds.length} user(s).`, count: delRes.rowCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.delete('/users/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteUsers);
+router.post('/users/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteUsers);
+
+// 6b. Superadmin: Delete User & Cascade All Company Data Completely from PostgreSQL
 router.delete('/users/:id', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
   const id = String(req.params.id);
   try {

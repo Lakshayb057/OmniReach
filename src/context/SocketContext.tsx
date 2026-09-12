@@ -46,6 +46,26 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setLastEvent({ type: 'BAILEYS_PAIRING_CODE', data, timestamp: Date.now() });
     });
 
+    socketInstance.on('INBOX_MESSAGE_RECEIVED', (data) => {
+      setLastEvent({ type: 'INBOX_MESSAGE_RECEIVED', data, timestamp: Date.now() });
+    });
+
+    socketInstance.on('INBOX_MESSAGE_SENT', (data) => {
+      setLastEvent({ type: 'INBOX_MESSAGE_SENT', data, timestamp: Date.now() });
+    });
+
+    socketInstance.on('INBOX_NOTE_ADDED', (data) => {
+      setLastEvent({ type: 'INBOX_NOTE_ADDED', data, timestamp: Date.now() });
+    });
+
+    socketInstance.on('CONVERSATION_UPDATED', (data) => {
+      setLastEvent({ type: 'CONVERSATION_UPDATED', data, timestamp: Date.now() });
+    });
+
+    socketInstance.on('CONVERSATION_DELETED', (data) => {
+      setLastEvent({ type: 'CONVERSATION_DELETED', data, timestamp: Date.now() });
+    });
+
     setSocket(socketInstance);
 
     return () => {

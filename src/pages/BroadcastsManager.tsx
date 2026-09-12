@@ -35,7 +35,9 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
   const [selectedCompanyFilter, setSelectedCompanyFilter] = useState<string>('all');
   const [selectedLogs, setSelectedLogs] = useState<any[] | null>(null);
   const [activeCampaignName, setActiveCampaignName] = useState('');
+  const [selectedCampaignIds, setSelectedCampaignIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     fetchCampaigns();
@@ -125,9 +127,43 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
     if (!confirm('Are you sure you want to delete this broadcast?')) return;
     try {
       await axios.delete(`/api/campaigns/${id}`);
+      setSelectedCampaignIds((prev) => prev.filter((i) => i !== id));
       fetchCampaigns();
     } catch (err: any) {
       alert(err.response?.data?.message || 'Failed to delete broadcast.');
+    }
+  };
+
+  const handleToggleSelect = (id: string) => {
+    setSelectedCampaignIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = () => {
+    if (selectedCampaignIds.length === campaigns.length) {
+      setSelectedCampaignIds([]);
+    } else {
+      setSelectedCampaignIds(campaigns.map((c) => c.id));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedCampaignIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete all ${selectedCampaignIds.length} selected campaign(s)? This will permanently remove them and their delivery audit logs.`)) {
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      await axios.post('/api/campaigns/batch-delete', {
+        campaign_ids: selectedCampaignIds,
+      });
+      setSelectedCampaignIds([]);
+      fetchCampaigns();
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to bulk delete campaigns.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -189,6 +225,18 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
               </select>
             </div>
           )}
+
+          {isSuperadmin && selectedCampaignIds.length > 0 && (
+            <button
+              onClick={handleBulkDelete}
+              disabled={isDeleting}
+              className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/25 flex items-center gap-1.5 transition-all cursor-pointer animate-fadeIn"
+            >
+              <Trash2 size={14} />
+              <span>Delete ({selectedCampaignIds.length}) Selected</span>
+            </button>
+          )}
+
           <button
             onClick={() => onOpenWizard()}
             className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-blue-600/25 flex items-center gap-2 transition-all hover:scale-[1.02]"
@@ -205,6 +253,16 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
           <table className="w-full text-left text-xs">
             <thead className="bg-[#070b14] text-slate-400 border-b border-slate-800 font-semibold">
               <tr>
+                {isSuperadmin && (
+                  <th className="p-4 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={campaigns.length > 0 && selectedCampaignIds.length === campaigns.length}
+                      onChange={handleSelectAll}
+                      className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    />
+                  </th>
+                )}
                 <th className="p-4">Broadcast Campaign</th>
                 {isSuperadmin && <th className="p-4">Company</th>}
                 <th className="p-4">Channel & Gateways</th>
@@ -219,13 +277,23 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
             <tbody className="divide-y divide-slate-800/80 text-slate-300">
               {campaigns.length === 0 ? (
                 <tr>
-                  <td colSpan={isSuperadmin ? 9 : 8} className="p-8 text-center text-slate-500">
+                  <td colSpan={isSuperadmin ? 10 : 8} className="p-8 text-center text-slate-500">
                     No campaigns created yet. Click "Launch 6-Step Wizard" to get started!
                   </td>
                 </tr>
               ) : (
                 campaigns.map((c) => (
                   <tr key={c.id} className="hover:bg-[#070b14]/50 transition-colors">
+                    {isSuperadmin && (
+                      <td className="p-4 w-10 text-center">
+                        <input
+                          type="checkbox"
+                          checked={selectedCampaignIds.includes(c.id)}
+                          onChange={() => handleToggleSelect(c.id)}
+                          className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                      </td>
+                    )}
                     <td className="p-4">
                       <div className="font-bold text-white text-sm">{c.name}</div>
                       <div className="text-[11px] text-slate-400 mt-0.5">{c.description || 'Omnichannel broadcast'}</div>

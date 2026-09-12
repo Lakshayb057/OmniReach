@@ -341,7 +341,27 @@ router.put('/:id', authenticateToken, requireAdmin, async (req: AuthenticatedReq
   }
 });
 
-// 4. Delete Gateway (Superadmin Only)
+// 4a. Batch Delete Gateways (Superadmin Only)
+const handleBatchDeleteGateways = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { gateway_ids } = req.body;
+  if (!Array.isArray(gateway_ids) || gateway_ids.length === 0) {
+    res.status(400).json({ success: false, message: 'No gateway IDs provided for deletion.' });
+    return;
+  }
+  try {
+    const delRes = await query(`DELETE FROM gateways_config WHERE id = ANY($1::uuid[]) RETURNING id, name`, [gateway_ids]);
+    await logAdminAudit(req.user!.id, 'BATCH_DELETE_GATEWAYS', 'gateways_config', undefined, { count: delRes.rowCount }, req.ip);
+
+    res.json({ success: true, message: `Successfully deleted ${delRes.rowCount || gateway_ids.length} gateway(s).`, count: delRes.rowCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.delete('/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteGateways);
+router.post('/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteGateways);
+
+// 4b. Delete Single Gateway (Superadmin Only)
 router.delete('/:id', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {

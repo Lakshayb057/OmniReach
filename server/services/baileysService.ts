@@ -451,6 +451,7 @@ export async function initBaileysSession(
             text: extractedText,
             contact_name: pushName,
             company_name: companyName,
+            gateway_id: gatewayId,
             whatsapp_message_id: msg.key.id || undefined,
             message_type: messageType,
             media_url: mediaUrl,

@@ -34,6 +34,7 @@ import {
   X,
   Flame,
   CheckCircle2,
+  Trash2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useSocket } from '../context/SocketContext';
@@ -105,6 +106,9 @@ export const WhatsAppInbox: React.FC = () => {
   const [agents, setAgents] = useState<any[]>([]);
   const [journeys, setJourneys] = useState<any[]>([]);
   const [activeWhatsAppGw, setActiveWhatsAppGw] = useState<any | null>(null);
+  const [whatsappGateways, setWhatsappGateways] = useState<any[]>([]);
+  const [selectedConvIds, setSelectedConvIds] = useState<string[]>([]);
+  const [isDeletingConv, setIsDeletingConv] = useState(false);
 
   const [activeView, setActiveView] = useState<'all' | 'mine' | 'unassigned' | 'bot_handling' | 'pending' | 'resolved' | 'urgent'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -151,6 +155,14 @@ export const WhatsAppInbox: React.FC = () => {
       if (selectedConv && data.conversation_id === selectedConv.id) {
         loadConversationDetails(selectedConv.id, false);
       }
+    } else if (data?.type === 'CONVERSATION_DELETED') {
+      const deletedId = data.conversation_id;
+      setConversations((prev) => prev.filter((c) => c.id !== deletedId));
+      setSelectedConvIds((prev) => prev.filter((id) => id !== deletedId));
+      if (selectedConv?.id === deletedId) {
+        setSelectedConv(null);
+        setMessages([]);
+      }
     }
   }, [lastEvent, selectedConv]);
 
@@ -170,12 +182,29 @@ export const WhatsAppInbox: React.FC = () => {
         if (selectedConv && data.conversation_id === selectedConv.id) {
           loadConversationDetails(selectedConv.id, false);
         }
+      } else if (data.type === 'CONVERSATION_DELETED') {
+        const deletedId = data.conversation_id;
+        setConversations((prev) => prev.filter((c) => c.id !== deletedId));
+        setSelectedConvIds((prev) => prev.filter((id) => id !== deletedId));
+        if (selectedConv?.id === deletedId) {
+          setSelectedConv(null);
+          setMessages([]);
+        }
       }
     };
 
-    socket.on('BROADCAST_METRICS_UPDATE', handleBroadcastUpdate);
+    socket.on('BROADCAST_UPDATED', handleBroadcastUpdate);
+    socket.on('INBOX_MESSAGE_RECEIVED', handleBroadcastUpdate);
+    socket.on('INBOX_MESSAGE_SENT', handleBroadcastUpdate);
+    socket.on('CONVERSATION_UPDATED', handleBroadcastUpdate);
+    socket.on('CONVERSATION_DELETED', handleBroadcastUpdate);
+
     return () => {
-      socket.off('BROADCAST_METRICS_UPDATE', handleBroadcastUpdate);
+      socket.off('BROADCAST_UPDATED', handleBroadcastUpdate);
+      socket.off('INBOX_MESSAGE_RECEIVED', handleBroadcastUpdate);
+      socket.off('INBOX_MESSAGE_SENT', handleBroadcastUpdate);
+      socket.off('CONVERSATION_UPDATED', handleBroadcastUpdate);
+      socket.off('CONVERSATION_DELETED', handleBroadcastUpdate);
     };
   }, [socket, selectedConv]);
 
@@ -263,11 +292,74 @@ export const WhatsAppInbox: React.FC = () => {
     try {
       const res = await axios.get('/api/gateways');
       if (res.data.success) {
-        const waGw = res.data.gateways.find((g: any) => g.type.includes('whatsapp') && g.is_active);
-        setActiveWhatsAppGw(waGw || null);
+        const waGws = (res.data.gateways || []).filter((g: any) => g.type.includes('whatsapp') && g.is_active);
+        setWhatsappGateways(waGws);
+        if (waGws.length > 0) {
+          setActiveWhatsAppGw((prev: any) => {
+            if (prev && waGws.some((g: any) => g.id === prev.id)) return prev;
+            return waGws[0];
+          });
+        }
       }
     } catch (err) {
       console.error('Failed to load gateways in inbox:', err);
+    }
+  };
+
+  const handleDeleteConversation = async (convId: string, convName?: string) => {
+    if (!confirm(`Are you sure you want to delete the conversation with "${convName || 'this contact'}" from the Live Box? All chat messages will be permanently deleted.`)) {
+      return;
+    }
+    try {
+      setIsDeletingConv(true);
+      await axios.delete(`/api/inbox/conversations/${convId}`);
+      setConversations((prev) => prev.filter((c) => c.id !== convId));
+      setSelectedConvIds((prev) => prev.filter((id) => id !== convId));
+      if (selectedConv?.id === convId) {
+        setSelectedConv(null);
+        setMessages([]);
+      }
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to delete conversation.');
+    } finally {
+      setIsDeletingConv(false);
+    }
+  };
+
+  const handleBulkDeleteConversations = async () => {
+    if (selectedConvIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete all ${selectedConvIds.length} selected conversation(s) and their chat histories?`)) {
+      return;
+    }
+    try {
+      setIsDeletingConv(true);
+      await axios.post('/api/inbox/conversations/bulk-delete', {
+        conversation_ids: selectedConvIds,
+      });
+      setConversations((prev) => prev.filter((c) => !selectedConvIds.includes(c.id)));
+      if (selectedConv && selectedConvIds.includes(selectedConv.id)) {
+        setSelectedConv(null);
+        setMessages([]);
+      }
+      setSelectedConvIds([]);
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to bulk delete conversations.');
+    } finally {
+      setIsDeletingConv(false);
+    }
+  };
+
+  const handleToggleSelectConv = (convId: string) => {
+    setSelectedConvIds((prev) =>
+      prev.includes(convId) ? prev.filter((id) => id !== convId) : [...prev, convId]
+    );
+  };
+
+  const handleSelectAllConvs = () => {
+    if (selectedConvIds.length === conversations.length) {
+      setSelectedConvIds([]);
+    } else {
+      setSelectedConvIds(conversations.map((c) => c.id));
     }
   };
 
@@ -287,6 +379,7 @@ export const WhatsAppInbox: React.FC = () => {
         await axios.post(`/api/inbox/conversations/${selectedConv.id}/messages`, {
           content: inputText.trim(),
           message_type: 'text',
+          gateway_id: activeWhatsAppGw?.id || undefined,
         });
       }
       setInputText('');
@@ -310,6 +403,7 @@ export const WhatsAppInbox: React.FC = () => {
         content: template.body_content,
         template_name: template.meta_template_name || template.name,
         is_template: true,
+        gateway_id: activeWhatsAppGw?.id || undefined,
       });
       setShowTemplateModal(false);
       loadConversationDetails(selectedConv.id, false);
@@ -499,6 +593,38 @@ export const WhatsAppInbox: React.FC = () => {
           </button>
         </div>
 
+        {/* Selection & Bulk Actions Header */}
+        {conversations.length > 0 && (
+          <div className="px-3.5 py-2 bg-slate-100 dark:bg-[#070b14] border-b border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs shrink-0">
+            <label className="flex items-center gap-2 cursor-pointer text-slate-600 dark:text-slate-400 font-semibold select-none">
+              <input
+                type="checkbox"
+                checked={selectedConvIds.length === conversations.length && conversations.length > 0}
+                onChange={handleSelectAllConvs}
+                className="rounded bg-white dark:bg-[#0f172a] border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
+              />
+              <span className="text-[11px]">Select All ({conversations.length})</span>
+            </label>
+
+            {selectedConvIds.length > 0 && (
+              <div className="flex items-center gap-2 animate-fadeIn">
+                <span className="text-[10px] text-blue-500 font-bold font-mono">
+                  {selectedConvIds.length} selected
+                </span>
+                <button
+                  type="button"
+                  onClick={handleBulkDeleteConversations}
+                  disabled={isDeletingConv}
+                  className="px-2.5 py-1 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer shadow-sm"
+                >
+                  <Trash2 size={11} />
+                  <span>Delete ({selectedConvIds.length})</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Conversation Items List */}
         <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/50">
           {conversations.length === 0 ? (
@@ -519,14 +645,25 @@ export const WhatsAppInbox: React.FC = () => {
                     setSelectedConv(conv);
                     loadConversationDetails(conv.id);
                   }}
-                  className={`p-3.5 cursor-pointer transition-all ${
+                  className={`p-3.5 cursor-pointer transition-all group relative ${
                     isSelected
                       ? 'bg-blue-50/80 dark:bg-blue-600/15 border-l-4 border-blue-600'
                       : 'hover:bg-slate-50 dark:hover:bg-[#0f172a] border-l-4 border-transparent'
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {/* Checkbox */}
+                      <input
+                        type="checkbox"
+                        checked={selectedConvIds.includes(conv.id)}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleToggleSelectConv(conv.id);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="rounded bg-white dark:bg-[#070b14] border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-0 cursor-pointer shrink-0"
+                      />
                       <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-emerald-500 to-teal-600 flex items-center justify-center text-white text-xs font-bold shrink-0 shadow-sm">
                         {conv.contact_name?.charAt(0) || 'W'}
                       </div>
@@ -540,15 +677,29 @@ export const WhatsAppInbox: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="flex flex-col items-end shrink-0 gap-1">
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        {conv.last_message_at ? new Date(conv.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                      </span>
-                      {conv.unread_count > 0 && (
-                        <span className="px-1.5 py-0.2 bg-emerald-500 text-white rounded-full text-[9px] font-extrabold shadow-sm">
-                          {conv.unread_count}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {conv.last_message_at ? new Date(conv.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                         </span>
-                      )}
+                        {conv.unread_count > 0 && (
+                          <span className="px-1.5 py-0.2 bg-emerald-500 text-white rounded-full text-[9px] font-extrabold shadow-sm">
+                            {conv.unread_count}
+                          </span>
+                        )}
+                      </div>
+                      {/* Single delete button */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteConversation(conv.id, conv.contact_name);
+                        }}
+                        title="Delete conversation"
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 transition-all cursor-pointer"
+                      >
+                        <Trash2 size={13} />
+                      </button>
                     </div>
                   </div>
 
@@ -675,6 +826,18 @@ export const WhatsAppInbox: React.FC = () => {
               >
                 <FileText size={13} />
                 <span>Templates</span>
+              </button>
+
+              {/* Delete Conversation from Live Box */}
+              <button
+                type="button"
+                onClick={() => handleDeleteConversation(selectedConv.id, selectedConv.contact_name || selectedConv.phone)}
+                disabled={isDeletingConv}
+                title="Remove Contact & Chat History from WhatsApp Live Box"
+                className="p-1.5 bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+              >
+                <Trash2 size={13} />
+                <span className="hidden sm:inline">Delete</span>
               </button>
             </div>
           </div>
@@ -832,9 +995,32 @@ export const WhatsAppInbox: React.FC = () => {
                 </button>
               </div>
 
-              <span className="text-[10px] text-slate-500 font-semibold">
-                Press <strong>Enter</strong> to send
-              </span>
+              <div className="flex items-center gap-3">
+                {/* Gateway Selector (Multi-Baileys & Multi-Gateway Support) */}
+                {whatsappGateways.length > 0 && !isPrivateNote && (
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="text-slate-400 text-[11px] font-semibold">Via:</span>
+                    <select
+                      value={activeWhatsAppGw?.id || ''}
+                      onChange={(e) => {
+                        const gw = whatsappGateways.find((g: any) => g.id === e.target.value);
+                        if (gw) setActiveWhatsAppGw(gw);
+                      }}
+                      className="bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 rounded-lg px-2 py-1 text-xs text-slate-800 dark:text-slate-200 font-semibold focus:outline-none focus:border-cyan-500 max-w-[180px]"
+                    >
+                      {whatsappGateways.map((gw) => (
+                        <option key={gw.id} value={gw.id}>
+                          {gw.type === 'whatsapp_baileys' ? '📱' : '☁️'} {gw.name || gw.type}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <span className="text-[10px] text-slate-500 font-semibold hidden sm:inline">
+                  Press <strong>Enter</strong> to send
+                </span>
+              </div>
             </div>
 
             {(() => {
@@ -1002,6 +1188,19 @@ export const WhatsAppInbox: React.FC = () => {
                 ))}
               </select>
             </div>
+          </div>
+
+          {/* Delete Contact & Chat from Live Box */}
+          <div className="pt-2">
+            <button
+              type="button"
+              disabled={isDeletingConv}
+              onClick={() => handleDeleteConversation(selectedConv.id, selectedConv.contact_name || selectedConv.phone)}
+              className="w-full py-2.5 px-3 bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white border border-rose-500/30 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+            >
+              <Trash2 size={14} />
+              <span>Remove Contact from Live Box</span>
+            </button>
           </div>
         </div>
       )}

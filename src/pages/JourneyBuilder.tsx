@@ -53,6 +53,8 @@ export const JourneyBuilder: React.FC = () => {
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [enrollmentMsg, setEnrollmentMsg] = useState('');
   const [copiedWebhook, setCopiedWebhook] = useState(false);
+  const [selectedJourneyIds, setSelectedJourneyIds] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // New Custom Journey Modal State
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -171,11 +173,53 @@ export const JourneyBuilder: React.FC = () => {
   const handleDeleteJourney = async (id: string) => {
     if (!confirm('Are you sure you want to delete this journey?')) return;
     try {
+      setIsDeleting(true);
       await axios.delete(`/api/journeys/${id}`);
-      setSelectedJourney(null);
+      setSelectedJourneyIds((prev) => prev.filter((i) => i !== id));
+      if (selectedJourney?.id === id) {
+        setSelectedJourney(null);
+      }
       fetchJourneys();
-    } catch (err) {
-      alert('Failed to delete journey.');
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to delete journey.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleToggleSelectJourney = (id: string) => {
+    setSelectedJourneyIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllJourneys = () => {
+    if (selectedJourneyIds.length === journeys.length) {
+      setSelectedJourneyIds([]);
+    } else {
+      setSelectedJourneyIds(journeys.map((j) => j.id));
+    }
+  };
+
+  const handleBulkDeleteJourneys = async () => {
+    if (selectedJourneyIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete all ${selectedJourneyIds.length} selected journey(s)?`)) {
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      await axios.post('/api/journeys/batch-delete', {
+        journey_ids: selectedJourneyIds,
+      });
+      if (selectedJourney && selectedJourneyIds.includes(selectedJourney.id)) {
+        setSelectedJourney(null);
+      }
+      setSelectedJourneyIds([]);
+      fetchJourneys();
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to bulk delete journeys.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -526,6 +570,31 @@ export const JourneyBuilder: React.FC = () => {
             <RefreshCw size={13} className="cursor-pointer hover:text-slate-900 dark:hover:text-white" onClick={fetchJourneys} />
           </div>
 
+          {isSuperadmin && journeys.length > 0 && (
+            <div className="flex items-center justify-between p-2.5 bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 rounded-xl text-xs shadow-xs">
+              <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedJourneyIds.length === journeys.length}
+                  onChange={handleSelectAllJourneys}
+                  className="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>Select All ({journeys.length})</span>
+              </label>
+              {selectedJourneyIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBulkDeleteJourneys}
+                  disabled={isDeleting}
+                  className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer text-[11px]"
+                >
+                  <Trash2 size={12} />
+                  <span>Delete ({selectedJourneyIds.length}) Selected</span>
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="space-y-3 max-h-[680px] overflow-y-auto pr-1">
             {journeys.length === 0 ? (
               <div className="p-8 text-center text-slate-400 bg-white dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 rounded-2xl space-y-2">
@@ -545,26 +614,52 @@ export const JourneyBuilder: React.FC = () => {
                   }`}
                 >
                   <div className="flex items-center justify-between mb-1.5">
-                    <span
-                      className={`px-2 py-0.5 rounded text-[9px] font-extrabold uppercase ${
-                        j.category === 'CRITICAL_ALERT'
-                          ? 'bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30'
-                          : j.category === 'CUSTOMER_ONBOARDING' || j.category === 'CUSTOMER_LIFECYCLE'
-                          ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30'
-                          : 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
-                      }`}
-                    >
-                      {j.category?.replace('_', ' ')}
-                    </span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                        j.status === 'active'
-                          ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
-                          : 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30'
-                      }`}
-                    >
-                      {j.status.toUpperCase()}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {isSuperadmin && (
+                        <input
+                          type="checkbox"
+                          checked={selectedJourneyIds.includes(j.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => handleToggleSelectJourney(j.id)}
+                          className="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                      )}
+                      <span
+                        className={`px-2 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                          j.category === 'CRITICAL_ALERT'
+                            ? 'bg-rose-50 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30'
+                            : j.category === 'CUSTOMER_ONBOARDING' || j.category === 'CUSTOMER_LIFECYCLE'
+                            ? 'bg-blue-50 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-500/30'
+                            : 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
+                        }`}
+                      >
+                        {j.category?.replace('_', ' ')}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                          j.status === 'active'
+                            ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
+                            : 'bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30'
+                        }`}
+                      >
+                        {j.status.toUpperCase()}
+                      </span>
+                      {isSuperadmin && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteJourney(j.id);
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-500 hover:bg-rose-500/10 rounded-md transition-colors cursor-pointer"
+                          title="Delete Journey"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <h3 className="font-bold text-xs text-slate-900 dark:text-white line-clamp-1 mb-1">{j.name}</h3>

@@ -38,6 +38,8 @@ export const UsersManagement: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCompanyFilter, setSelectedCompanyFilter] = useState('all');
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
+  const [isDeletingUsers, setIsDeletingUsers] = useState(false);
 
   // Modal State for User Create/Edit
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -342,6 +344,43 @@ export const UsersManagement: React.FC = () => {
     }
   };
 
+  const handleToggleSelectUser = (id: string) => {
+    setSelectedUserIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllUsers = () => {
+    const selectableUsers = filteredUsers.filter((u) => u.id !== currentUser?.id);
+    if (selectedUserIds.length === selectableUsers.length) {
+      setSelectedUserIds([]);
+    } else {
+      setSelectedUserIds(selectableUsers.map((u) => u.id));
+    }
+  };
+
+  const handleBulkDeleteUsers = async () => {
+    if (selectedUserIds.length === 0) return;
+    if (!confirm(`⚠️ PERMANENT CASCADE DELETE: Are you sure you want to delete all ${selectedUserIds.length} selected user(s)? This will also purge their associated company tenant data.`)) {
+      return;
+    }
+    try {
+      setIsDeletingUsers(true);
+      const res = await axios.post('/api/auth/users/batch-delete', {
+        user_ids: selectedUserIds,
+      });
+      alert(res.data?.message || 'Selected users removed successfully.');
+      setSelectedUserIds([]);
+      fetchUsers();
+      fetchCompanies();
+      fetchGatewaysSummary();
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to bulk delete users.');
+    } finally {
+      setIsDeletingUsers(false);
+    }
+  };
+
   const filteredUsers = users.filter((u) => {
     const query = searchQuery.toLowerCase();
     return (
@@ -444,7 +483,18 @@ export const UsersManagement: React.FC = () => {
               </select>
             </div>
 
-            <div className="flex items-center space-x-2 text-xs text-slate-500 dark:text-slate-400">
+            <div className="flex items-center space-x-3 text-xs text-slate-500 dark:text-slate-400">
+              {isSuperadmin && selectedUserIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBulkDeleteUsers}
+                  disabled={isDeletingUsers}
+                  className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md cursor-pointer animate-fadeIn"
+                >
+                  <Trash2 size={13} />
+                  <span>Delete ({selectedUserIds.length}) Selected</span>
+                </button>
+              )}
               <span>Total Registered Admins: <strong className="text-slate-900 dark:text-white font-mono">{users.length}</strong></span>
               <RefreshCw size={13} className="cursor-pointer hover:text-blue-500 ml-2" onClick={fetchUsers} />
             </div>
@@ -456,6 +506,19 @@ export const UsersManagement: React.FC = () => {
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 dark:bg-[#070b14] text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 font-semibold">
                   <tr>
+                    {isSuperadmin && (
+                      <th className="p-4 w-10 text-center">
+                        <input
+                          type="checkbox"
+                          checked={
+                            filteredUsers.filter((u) => u.id !== currentUser?.id).length > 0 &&
+                            selectedUserIds.length === filteredUsers.filter((u) => u.id !== currentUser?.id).length
+                          }
+                          onChange={handleSelectAllUsers}
+                          className="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                        />
+                      </th>
+                    )}
                     <th className="p-4">User Details</th>
                     <th className="p-4">Assigned Company</th>
                     <th className="p-4">Allocated Gateways & API Status</th>
@@ -467,7 +530,7 @@ export const UsersManagement: React.FC = () => {
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80 text-slate-700 dark:text-slate-300">
                   {filteredUsers.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="p-8 text-center text-slate-500">
+                      <td colSpan={isSuperadmin ? 7 : 6} className="p-8 text-center text-slate-500">
                         No users found matching current filters.
                       </td>
                     </tr>
@@ -479,6 +542,20 @@ export const UsersManagement: React.FC = () => {
 
                       return (
                         <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-[#070b14]/50 transition-colors">
+                          {isSuperadmin && (
+                            <td className="p-4 w-10 text-center">
+                              {u.id !== currentUser?.id ? (
+                                <input
+                                  type="checkbox"
+                                  checked={selectedUserIds.includes(u.id)}
+                                  onChange={() => handleToggleSelectUser(u.id)}
+                                  className="rounded border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                />
+                              ) : (
+                                <span title="Current User" className="text-slate-400 text-xs">👤</span>
+                              )}
+                            </td>
+                          )}
                           <td className="p-4">
                             <div className="flex items-center space-x-3">
                               <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shrink-0 font-bold shadow-md">

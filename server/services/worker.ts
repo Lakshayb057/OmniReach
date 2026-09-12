@@ -38,6 +38,9 @@ export function setSocketIOInstance(io: SocketIOServer) {
 export function emitBroadcastUpdate(data: any) {
   if (ioInstance) {
     ioInstance.emit('BROADCAST_UPDATED', data);
+    if (data?.type) {
+      ioInstance.emit(data.type, data);
+    }
   }
 }
 

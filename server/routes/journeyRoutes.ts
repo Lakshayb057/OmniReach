@@ -234,7 +234,27 @@ router.post('/:id/enroll-all-leads', authenticateToken, async (req: Authenticate
   }
 });
 
-// 7. Delete Journey (Superadmin Only)
+// 7a. Batch Delete Journeys (Superadmin Only)
+const handleBatchDeleteJourneys = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { journey_ids } = req.body;
+  if (!Array.isArray(journey_ids) || journey_ids.length === 0) {
+    res.status(400).json({ success: false, message: 'No journey IDs provided for deletion.' });
+    return;
+  }
+  try {
+    const delRes = await query(`DELETE FROM journeys WHERE id = ANY($1::uuid[]) RETURNING id, name`, [journey_ids]);
+    await logAdminAudit(req.user?.id, 'BATCH_DELETE_JOURNEYS', 'journey', undefined, { count: delRes.rowCount }, req.ip);
+
+    res.json({ success: true, message: `Successfully deleted ${delRes.rowCount || journey_ids.length} journey workflow(s).`, count: delRes.rowCount });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.delete('/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteJourneys);
+router.post('/batch-delete', authenticateToken, requireSuperadmin, handleBatchDeleteJourneys);
+
+// 7b. Delete Single Journey (Superadmin Only)
 router.delete('/:id', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {

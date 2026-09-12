@@ -9,6 +9,8 @@ import {
   handoverToHumanAgent,
   isSessionActive,
   getSessionRemainingMs,
+  deleteConversation,
+  batchDeleteConversations,
 } from '../services/inboxService';
 import { emitBroadcastUpdate } from '../services/worker';
 
@@ -198,7 +200,7 @@ router.get('/conversations/:id', authenticateToken, async (req: AuthenticatedReq
 // 3. Send Outbound Reply / Template Message
 router.post('/conversations/:id/messages', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
-  const { content, message_type, template_name, media_url, buttons_json, is_template } = req.body;
+  const { content, message_type, template_name, media_url, buttons_json, is_template, gateway_id } = req.body;
 
   if (!content && !template_name) {
     res.status(400).json({ success: false, message: 'Message content or template name is required.' });
@@ -214,6 +216,7 @@ router.post('/conversations/:id/messages', authenticateToken, async (req: Authen
         template_name,
         media_url,
         buttons_json,
+        gateway_id,
       },
       req.user
     );
@@ -401,5 +404,34 @@ router.get('/webhook', (req, res) => {
     res.status(403).send('Forbidden');
   }
 });
+
+// 8. Delete Single Conversation
+router.delete('/conversations/:id', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const deleted = await deleteConversation(String(id), req.user);
+    res.json({ success: true, message: 'Conversation removed from live box.', conversation: deleted });
+  } catch (err: any) {
+    res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, message: err.message });
+  }
+});
+
+// 9. Bulk Delete Conversations
+const handleBatchDeleteConversations = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { conversation_ids } = req.body;
+  if (!Array.isArray(conversation_ids) || conversation_ids.length === 0) {
+    res.status(400).json({ success: false, message: 'No conversation IDs provided for deletion.' });
+    return;
+  }
+  try {
+    const result = await batchDeleteConversations(conversation_ids, req.user);
+    res.json({ success: true, message: `Successfully removed ${result.count} conversations.`, count: result.count });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.delete('/conversations/bulk-delete', authenticateToken, handleBatchDeleteConversations);
+router.post('/conversations/bulk-delete', authenticateToken, handleBatchDeleteConversations);
 
 export default router;

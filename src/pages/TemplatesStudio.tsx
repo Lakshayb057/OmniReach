@@ -49,6 +49,8 @@ export const TemplatesStudio: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // New/Edit Template Form State
   const [name, setName] = useState('');
@@ -139,17 +141,6 @@ export const TemplatesStudio: React.FC = () => {
       alert(err.response?.data?.message || 'Meta template status check failed.');
     } finally {
       setSyncingTemplateId(null);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to remove this template?')) return;
-    try {
-      await axios.delete(`/api/templates/${id}`);
-      setSelectedTemplate(null);
-      fetchTemplates();
-    } catch (err) {
-      alert('Failed to delete template.');
     }
   };
 
@@ -246,6 +237,59 @@ export const TemplatesStudio: React.FC = () => {
     setButtons([]);
     setChannel(activeChannel === 'email' ? 'email' : 'whatsapp');
     setTargetCompany(isSuperadmin ? 'OmniReach Global' : (user?.company_name || 'OmniReach Global'));
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this template?')) return;
+    try {
+      setIsDeleting(true);
+      await axios.delete(`/api/templates/${id}`);
+      setSelectedTemplateIds((prev) => prev.filter((i) => i !== id));
+      if (selectedTemplate?.id === id) {
+        setSelectedTemplate(null);
+      }
+      fetchTemplates();
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to delete template.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleToggleSelect = (id: string) => {
+    setSelectedTemplateIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = () => {
+    if (selectedTemplateIds.length === templates.length) {
+      setSelectedTemplateIds([]);
+    } else {
+      setSelectedTemplateIds(templates.map((t) => t.id));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedTemplateIds.length === 0) return;
+    if (!confirm(`Are you sure you want to delete all ${selectedTemplateIds.length} selected template(s)?`)) {
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      await axios.post('/api/templates/batch-delete', {
+        template_ids: selectedTemplateIds,
+      });
+      if (selectedTemplate && selectedTemplateIds.includes(selectedTemplate.id)) {
+        setSelectedTemplate(null);
+      }
+      setSelectedTemplateIds([]);
+      fetchTemplates();
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to bulk delete templates.');
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const handleAddButton = () => {
@@ -365,6 +409,31 @@ export const TemplatesStudio: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Template Selector List */}
         <div className="lg:col-span-5 space-y-4">
+          {isSuperadmin && templates.length > 0 && (
+            <div className="flex items-center justify-between p-2.5 bg-[#0f172a] border border-slate-800 rounded-xl text-xs">
+              <label className="flex items-center gap-2 text-slate-300 font-semibold cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedTemplateIds.length === templates.length}
+                  onChange={handleSelectAll}
+                  className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <span>Select All ({templates.length})</span>
+              </label>
+              {selectedTemplateIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleBulkDelete}
+                  disabled={isDeleting}
+                  className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                >
+                  <Trash2 size={12} />
+                  <span>Delete ({selectedTemplateIds.length}) Selected</span>
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
             {templates.length === 0 ? (
               <div className="p-8 bg-[#0f172a] border border-slate-800 rounded-2xl text-center text-slate-500 text-xs">
@@ -383,6 +452,15 @@ export const TemplatesStudio: React.FC = () => {
                 >
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-2">
+                      {isSuperadmin && (
+                        <input
+                          type="checkbox"
+                          checked={selectedTemplateIds.includes(t.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={() => handleToggleSelect(t.id)}
+                          className="rounded border-slate-700 text-blue-600 focus:ring-blue-500 cursor-pointer mr-0.5"
+                        />
+                      )}
                       {t.channel === 'whatsapp' ? (
                         <Smartphone size={14} className="text-emerald-400" />
                       ) : (

@@ -80,6 +80,7 @@ export async function initializeDatabase() {
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_ctr_lead ON ctr_clicks(master_lead_id);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_lead ON conversations(master_lead_id);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaign_logs_lead ON campaign_logs(master_lead_id);`);
+      await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_gateway_id UUID REFERENCES gateways_config(id) ON DELETE SET NULL;`);
     } catch (trgmErr) {
       console.warn('GIN Trigram extension notice:', trgmErr);
     }
