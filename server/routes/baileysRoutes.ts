@@ -19,12 +19,22 @@ import {
 
 const router = express.Router();
 
+function canAccessGateway(gw: any, req: AuthenticatedRequest): boolean {
+  if (req.user?.role === 'superadmin') return true;
+  return gw.company_name === req.user?.company_name;
+}
+
 /**
- * 1. List all in-memory Baileys sessions & statuses
+ * 1. List all in-memory Baileys sessions & statuses (Company Isolated)
  */
 router.get('/sessions', authenticateToken, async (req: AuthenticatedRequest, res) => {
   try {
-    const sessions = getAllBaileysSessions();
+    const isSuper = req.user?.role === 'superadmin';
+    const compName = req.user?.company_name;
+    const allSessions = getAllBaileysSessions();
+    const sessions = isSuper
+      ? allSessions
+      : allSessions.filter((s: any) => s.companyName === compName);
     res.json({ success: true, sessions });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
@@ -43,8 +53,13 @@ router.get('/:id/status', authenticateToken, async (req: AuthenticatedRequest, r
       return;
     }
 
-    const session = getBaileysSession(String(id));
     const gw = gwRes.rows[0];
+    if (!canAccessGateway(gw, req)) {
+      res.status(403).json({ success: false, message: 'Access denied to this gateway session.' });
+      return;
+    }
+
+    const session = getBaileysSession(String(id));
 
     res.json({
       success: true,
@@ -78,6 +93,11 @@ router.post('/:id/connect', authenticateToken, requireAdmin, async (req: Authent
     }
 
     const gw = gwRes.rows[0];
+    if (!canAccessGateway(gw, req)) {
+      res.status(403).json({ success: false, message: 'Access denied to this gateway session.' });
+      return;
+    }
+
     if (gw.type !== 'whatsapp_baileys') {
       res.status(400).json({ success: false, message: 'Gateway is not a WhatsApp Baileys gateway.' });
       return;
@@ -130,6 +150,11 @@ router.post('/:id/pairing-code', authenticateToken, requireAdmin, async (req: Au
     }
 
     const gw = gwRes.rows[0];
+    if (!canAccessGateway(gw, req)) {
+      res.status(403).json({ success: false, message: 'Access denied to this gateway session.' });
+      return;
+    }
+
     const code = await requestBaileysPairingCode(String(id), phone_number, gw.company_name);
 
     res.json({
@@ -156,6 +181,18 @@ router.post('/:id/test-message', authenticateToken, requireAdmin, async (req: Au
   }
 
   try {
+    const gwRes = await query('SELECT * FROM gateways_config WHERE id = $1', [String(id)]);
+    if (gwRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Gateway not found.' });
+      return;
+    }
+
+    const gw = gwRes.rows[0];
+    if (!canAccessGateway(gw, req)) {
+      res.status(403).json({ success: false, message: 'Access denied to this gateway session.' });
+      return;
+    }
+
     const testText = message || '🚀 OmniReach Baileys WhatsApp Gateway test message! Socket connection verified.';
     const sendResult = await sendBaileysMessage(String(id), recipient_phone, { text: testText });
 
@@ -184,6 +221,18 @@ router.post('/:id/disconnect', authenticateToken, requireAdmin, async (req: Auth
   const { purge_auth = true } = req.body;
 
   try {
+    const gwRes = await query('SELECT * FROM gateways_config WHERE id = $1', [String(id)]);
+    if (gwRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Gateway not found.' });
+      return;
+    }
+
+    const gw = gwRes.rows[0];
+    if (!canAccessGateway(gw, req)) {
+      res.status(403).json({ success: false, message: 'Access denied to this gateway session.' });
+      return;
+    }
+
     await disconnectBaileysSession(String(id), purge_auth);
     res.json({
       success: true,
@@ -200,6 +249,18 @@ router.post('/:id/disconnect', authenticateToken, requireAdmin, async (req: Auth
 router.post('/:id/cancel-pairing', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
+    const gwRes = await query('SELECT * FROM gateways_config WHERE id = $1', [String(id)]);
+    if (gwRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Gateway not found.' });
+      return;
+    }
+
+    const gw = gwRes.rows[0];
+    if (!canAccessGateway(gw, req)) {
+      res.status(403).json({ success: false, message: 'Access denied to this gateway session.' });
+      return;
+    }
+
     await cancelBaileysPairing(String(id));
     res.json({
       success: true,
@@ -216,7 +277,17 @@ router.post('/:id/cancel-pairing', authenticateToken, requireAdmin, async (req: 
 router.post('/:id/reset-session', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
-    await resetBaileysSession(String(id));
+    const gwRes = await query('SELECT * FROM gateways_config WHERE id = $1', [String(id)]);
+    if (gwRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Gateway not found.' });
+      return;
+    }
+
+    const gw = gwRes.rows[0];
+    if (!canAccessGateway(gw, req)) {
+      res.status(403).json({ success: false, message: 'Access denied to this gateway session.' });
+      return;
+    }
     res.json({
       success: true,
       message: 'Baileys session reset and credentials purged successfully.',

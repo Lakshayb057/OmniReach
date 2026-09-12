@@ -37,6 +37,11 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res) => {
 // 1B. Company Gateways Summary (For Users & Company Admin Management)
 router.get('/company-summary', authenticateToken, async (req: AuthenticatedRequest, res) => {
   try {
+    const isSuper = req.user?.role === 'superadmin';
+    const compName = req.user?.company_name || 'Independent Enterprise';
+    const whereClause = isSuper ? '' : 'WHERE company_name = $1';
+    const params = isSuper ? [] : [compName];
+
     const result = await query(`
       SELECT 
         company_name,
@@ -59,8 +64,9 @@ router.get('/company-summary', authenticateToken, async (req: AuthenticatedReque
           )
         )) as gateways
       FROM gateways_config
+      ${whereClause}
       GROUP BY company_name
-    `);
+    `, params);
     
     const summary: Record<string, any> = {};
     for (const row of result.rows) {

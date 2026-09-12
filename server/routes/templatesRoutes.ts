@@ -268,11 +268,18 @@ router.put('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Pr
   }
 });
 
-// 4. Delete Template (Superadmin Only)
-router.delete('/:id', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
+// 4. Delete Template (Company Isolated or Superadmin)
+router.delete('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
-    await query(`DELETE FROM campaign_templates WHERE id = $1`, [String(id)]);
+    const compCond = req.user?.role === 'superadmin' ? '' : 'AND company_name = $2';
+    const params = req.user?.role === 'superadmin' ? [String(id)] : [String(id), req.user?.company_name];
+
+    const delRes = await query(`DELETE FROM campaign_templates WHERE id = $1 ${compCond} RETURNING id`, params);
+    if (delRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Template not found or access denied.' });
+      return;
+    }
     await logAdminAudit(req.user!.id, 'DELETE_TEMPLATE', 'campaign_templates', String(id), {}, req.ip);
 
     res.json({ success: true, message: 'Template deleted.' });
@@ -285,19 +292,21 @@ router.delete('/:id', authenticateToken, requireSuperadmin, async (req: Authenti
 router.post('/:id/sync-meta', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
-    const tmplRes = await query('SELECT * FROM campaign_templates WHERE id = $1', [String(id)]);
+    const compCond = req.user?.role === 'superadmin' ? '' : 'AND company_name = $2';
+    const params = req.user?.role === 'superadmin' ? [String(id)] : [String(id), req.user?.company_name];
+    const tmplRes = await query(`SELECT * FROM campaign_templates WHERE id = $1 ${compCond}`, params);
     if (tmplRes.rows.length === 0) {
-      res.status(404).json({ success: false, message: 'Template not found.' });
+      res.status(404).json({ success: false, message: 'Template not found or access denied.' });
       return;
     }
     const tmpl = tmplRes.rows[0];
 
-    // Look up company's WhatsApp gateway
+    // Look up company's WhatsApp Meta gateway
     const gwRes = await query(
       `SELECT * FROM gateways_config 
-       WHERE (company_name = $1 OR company_name = 'OmniReach Global') 
-         AND type LIKE 'whatsapp%' AND is_active = true 
-       ORDER BY (company_name = $1) DESC, is_default DESC LIMIT 1`,
+       WHERE company_name = $1 
+         AND type = 'whatsapp_meta' AND is_active = true 
+       ORDER BY is_default DESC LIMIT 1`,
       [tmpl.company_name]
     );
     const gw = gwRes.rows[0];

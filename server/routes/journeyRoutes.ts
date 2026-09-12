@@ -14,7 +14,7 @@ function getCompanyCondition(req: AuthenticatedRequest, startingIndex: number): 
     return { clause: '', params: [] };
   }
   const compName = req.user?.company_name || 'Independent Enterprise';
-  return { clause: `(j.company_name = $${startingIndex} OR j.company_name = 'OmniReach Global')`, params: [compName] };
+  return { clause: `j.company_name = $${startingIndex}`, params: [compName] };
 }
 
 // 1. List All Journeys (Company Isolated)
@@ -39,12 +39,14 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res) => {
 });
 
 // 2. Get Single Journey Details & Node Execution Logs
-router.get('/:id', authenticateToken, async (req, res) => {
+router.get('/:id', authenticateToken, async (req: AuthenticatedRequest, res) => {
   const { id } = req.params;
   try {
-    const journeyRes = await query('SELECT * FROM journeys WHERE id = $1', [String(id)]);
+    const compCond = req.user?.role === 'superadmin' ? '' : 'AND company_name = $2';
+    const params = req.user?.role === 'superadmin' ? [String(id)] : [String(id), req.user?.company_name];
+    const journeyRes = await query(`SELECT * FROM journeys WHERE id = $1 ${compCond}`, params);
     if (journeyRes.rows.length === 0) {
-      res.status(404).json({ success: false, message: 'Journey not found' });
+      res.status(404).json({ success: false, message: 'Journey not found or access restricted' });
       return;
     }
 

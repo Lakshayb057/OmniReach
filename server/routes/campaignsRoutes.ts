@@ -178,6 +178,20 @@ router.get('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Pr
 router.get('/:id/logs', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
+    const isSuper = req.user?.role === 'superadmin';
+    const compName = req.user?.company_name;
+
+    // Verify campaign ownership
+    const bcastRes = await query('SELECT company_name FROM campaign_broadcasts WHERE id = $1', [String(id)]);
+    if (bcastRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Broadcast not found.' });
+      return;
+    }
+    if (!isSuper && bcastRes.rows[0].company_name !== compName) {
+      res.status(403).json({ success: false, message: 'Access denied to this campaign logs.' });
+      return;
+    }
+
     const logsRes = await query(
       `SELECT l.*, ml.full_name as lead_name, ml.urn as lead_urn, ml.fmcb_id as lead_fmcb_id
        FROM campaign_logs l
@@ -198,12 +212,21 @@ router.get('/:id/logs', authenticateToken, async (req: AuthenticatedRequest, res
 router.post('/:id/run-now', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
-    await query(
+    const compCond = req.user?.role === 'superadmin' ? '' : 'AND company_name = $2';
+    const params = req.user?.role === 'superadmin' ? [String(id)] : [String(id), req.user?.company_name];
+
+    const updateRes = await query(
       `UPDATE campaign_broadcasts 
        SET status = 'scheduled', scheduled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $1`,
-      [String(id)]
+       WHERE id = $1 ${compCond}
+       RETURNING id`,
+      params
     );
+
+    if (updateRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Broadcast not found or access denied.' });
+      return;
+    }
 
     await logAdminAudit(req.user!.id, 'FORCE_RUN_CAMPAIGN', 'campaign_broadcasts', String(id), {}, req.ip);
 

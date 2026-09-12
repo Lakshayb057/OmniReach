@@ -102,8 +102,8 @@ router.get('/users', authenticateToken, async (req: AuthenticatedRequest, res): 
         whereClause = 'WHERE company_name = $1';
       }
     } else {
-      params.push(req.user?.company_name || 'OmniReach Global');
-      whereClause = "WHERE (company_name = $1 OR company_name = 'OmniReach Global')";
+      params.push(req.user?.company_name || 'Independent Enterprise');
+      whereClause = 'WHERE company_name = $1';
     }
 
     const result = await query(
@@ -408,8 +408,8 @@ router.get('/audit-logs', authenticateToken, async (req: AuthenticatedRequest, r
     let whereClause = '';
     const params: any[] = [];
     if (req.user?.role !== 'superadmin') {
-      params.push(req.user?.company_name || 'OmniReach Global');
-      whereClause = 'WHERE (u.company_name = $1 OR u.company_name IS NULL)';
+      params.push(req.user?.company_name || 'Independent Enterprise');
+      whereClause = 'WHERE u.company_name = $1';
     }
 
     const logsRes = await query(

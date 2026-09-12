@@ -23,7 +23,7 @@ function getCompanyCondition(req: AuthenticatedRequest, startingIndex: number): 
     return { clause: '', params: [] };
   }
   const compName = req.user?.company_name || 'Independent Enterprise';
-  return { clause: `(c.company_name = $${startingIndex} OR c.company_name = 'OmniReach Global')`, params: [compName] };
+  return { clause: `c.company_name = $${startingIndex}`, params: [compName] };
 }
 
 // 1. List Conversations with View Filters & Search
@@ -318,7 +318,9 @@ router.post('/canned-responses', authenticateToken, async (req: AuthenticatedReq
 router.delete('/canned-responses/:id', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
-    await query('DELETE FROM canned_responses WHERE id = $1', [id]);
+    const compCond = req.user?.role === 'superadmin' ? '' : 'AND company_name = $2';
+    const params = req.user?.role === 'superadmin' ? [id] : [id, req.user?.company_name];
+    await query(`DELETE FROM canned_responses WHERE id = $1 ${compCond}`, params);
     res.json({ success: true, message: 'Canned response removed.' });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
