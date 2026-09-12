@@ -9,6 +9,7 @@ import {
   DEFAULT_ANTI_BAN_SETTINGS,
   AntiBanSettings,
 } from './antiBanService';
+import { buildSearchClauses } from '../routes/leadsRoutes';
 
 let ioInstance: SocketIOServer | null = null;
 let isWorkerRunning = false;
@@ -159,11 +160,13 @@ export async function processBroadcast(broadcast: any) {
         baseConditions.push(`email_optin = true`);
       }
 
-      // Search keyword filter
+      // Search keyword filter (phone variants, Sr. No, name, email, URN, FMCB)
       if (filters.search && typeof filters.search === 'string' && filters.search.trim().length > 0) {
-        baseParams.push(`%${filters.search.trim().toLowerCase()}%`);
-        const pIdx = baseParams.length;
-        baseConditions.push(`(LOWER(full_name) LIKE $${pIdx} OR LOWER(email) LIKE $${pIdx} OR phone LIKE $${pIdx} OR urn LIKE $${pIdx} OR fmcb_id LIKE $${pIdx})`);
+        const searchCond = buildSearchClauses(filters.search, baseParams.length + 1);
+        if (searchCond.clause) {
+          baseConditions.push(searchCond.clause);
+          baseParams.push(...searchCond.params);
+        }
       }
     } else {
       // Linked direct upload

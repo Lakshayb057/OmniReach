@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import {
   Users,
@@ -56,6 +56,10 @@ export const MasterDataCenter: React.FC = () => {
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // AbortController and mount tracking to eliminate race conditions
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isInitialMount = useRef(true);
+
   // Upload Modal & Live Progress State
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -107,28 +111,36 @@ export const MasterDataCenter: React.FC = () => {
 
   // 300ms Debounce on Search Input
   useEffect(() => {
+    if (isInitialMount.current) {
+      return;
+    }
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
       localStorage.setItem('mdc_search', search);
       setPage(1);
+      fetchLeads(search, 1);
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Fetch leads on dependency changes
+  // Fetch leads on dependency changes (pagination, opt-in filter, channel filter, company, sorting)
   useEffect(() => {
     localStorage.setItem('mdc_optin_filter', optinFilter);
     fetchLeads();
     if (isSuperadmin) {
       fetchCompanies();
     }
-  }, [page, limit, optinFilter, channelFilter, selectedCompanyFilter, debouncedSearch, sortBy, sortDir]);
+  }, [page, limit, optinFilter, channelFilter, selectedCompanyFilter, sortBy, sortDir]);
 
   // Debounced Sr No Range filter
   useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
     const timer = setTimeout(() => {
       setPage(1);
-      fetchLeads();
+      fetchLeads(undefined, 1);
     }, 350);
     return () => clearTimeout(timer);
   }, [srNoStart, srNoEnd]);
@@ -214,14 +226,25 @@ export const MasterDataCenter: React.FC = () => {
     return () => clearInterval(interval);
   }, [ingestJob?.jobId, ingestJob?.status, setIsWorkingOrProcessing]);
 
-  const fetchLeads = async () => {
+  const fetchLeads = async (searchOverride?: string, pageOverride?: number) => {
+    // Cancel previous in-flight request to eliminate race conditions
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const targetSearch = searchOverride !== undefined ? searchOverride : debouncedSearch;
+    const targetPage = pageOverride !== undefined ? pageOverride : page;
+
     try {
       setIsLoading(true);
       const res = await axios.get('/api/leads', {
+        signal: controller.signal,
         params: {
-          page,
+          page: targetPage,
           limit,
-          search: debouncedSearch.trim() || undefined,
+          search: targetSearch.trim() || undefined,
           optin_filter: optinFilter !== 'all' ? optinFilter : undefined,
           channel_filter: channelFilter !== 'all' ? channelFilter : undefined,
           sr_no_start: srNoStart ? parseInt(srNoStart, 10) : undefined,
@@ -236,18 +259,44 @@ export const MasterDataCenter: React.FC = () => {
         setLeads(res.data.data);
         setTotal(res.data.pagination.total);
       }
-    } catch (err) {
+    } catch (err: any) {
+      if (axios.isCancel(err) || err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
       console.error('Failed to load leads:', err);
     } finally {
-      setIsLoading(false);
+      if (abortControllerRef.current === controller) {
+        setIsLoading(false);
+      }
     }
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setDebouncedSearch(search);
+    localStorage.setItem('mdc_search', search);
     setPage(1);
-    fetchLeads();
+    fetchLeads(search, 1);
+  };
+
+  const handleClearSearch = () => {
+    setSearch('');
+    setDebouncedSearch('');
+    localStorage.removeItem('mdc_search');
+    setPage(1);
+    fetchLeads('', 1);
+  };
+
+  const handleResetAllFilters = () => {
+    setSearch('');
+    setDebouncedSearch('');
+    localStorage.removeItem('mdc_search');
+    setSrNoStart('');
+    setSrNoEnd('');
+    setChannelFilter('all');
+    setOptinFilter('all');
+    setPage(1);
+    fetchLeads('', 1);
   };
 
   const handleSort = (column: string) => {
@@ -570,8 +619,9 @@ export const MasterDataCenter: React.FC = () => {
             {search && (
               <button
                 type="button"
-                onClick={() => setSearch('')}
+                onClick={handleClearSearch}
                 className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300 transition-colors"
+                title="Clear search"
               >
                 <X size={14} />
               </button>
@@ -674,15 +724,7 @@ export const MasterDataCenter: React.FC = () => {
 
           {(srNoStart || srNoEnd || channelFilter !== 'all' || optinFilter !== 'all' || search) && (
             <button
-              onClick={() => {
-                setSearch('');
-                setDebouncedSearch('');
-                setSrNoStart('');
-                setSrNoEnd('');
-                setChannelFilter('all');
-                setOptinFilter('all');
-                setPage(1);
-              }}
+              onClick={handleResetAllFilters}
               className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors"
               title="Reset all filters"
             >
@@ -732,6 +774,32 @@ export const MasterDataCenter: React.FC = () => {
           </button>
         )}
       </div>
+
+      {/* Active Search & Filter Banner */}
+      {debouncedSearch && (
+        <div className="bg-blue-950/40 border border-blue-500/30 rounded-2xl px-5 py-3 flex items-center justify-between text-xs animate-fadeIn backdrop-blur-sm shadow-md">
+          <div className="flex items-center gap-2.5 text-slate-200">
+            <Search size={15} className="text-blue-400 shrink-0" />
+            <span>
+              Search filter active: <strong className="text-blue-300 font-mono font-bold bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">"{debouncedSearch}"</strong>
+              {isLoading ? (
+                <span className="text-slate-400 ml-2 animate-pulse font-medium">Filtering contacts...</span>
+              ) : (
+                <span className="text-emerald-400 ml-2 font-bold font-mono">
+                  ({total.toLocaleString()} contact{total === 1 ? '' : 's'} matched)
+                </span>
+              )}
+            </span>
+          </div>
+          <button
+            onClick={handleClearSearch}
+            className="px-3 py-1 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors text-[11px] font-semibold border border-slate-700/60"
+          >
+            <X size={13} />
+            <span>Clear Search</span>
+          </button>
+        </div>
+      )}
 
       {/* Master Contacts Table */}
       <div className="bg-[#0f172a] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
@@ -802,12 +870,33 @@ export const MasterDataCenter: React.FC = () => {
               ) : leads.length === 0 ? (
                 <tr>
                   <td colSpan={isSuperadmin ? 11 : 10} className="p-12 text-center text-slate-500">
-                    <div className="max-w-sm mx-auto space-y-2">
-                      <Users size={32} className="mx-auto text-slate-600 mb-2" />
-                      <div className="text-sm font-semibold text-slate-300">No contacts found</div>
-                      <div className="text-xs text-slate-500">
-                        Try adjusting your search criteria, clearing filters, or adding a new contact above.
+                    <div className="max-w-md mx-auto space-y-3">
+                      <Users size={36} className="mx-auto text-slate-600 mb-2" />
+                      <div className="text-sm font-bold text-slate-200">
+                        {debouncedSearch ? `No contacts found matching "${debouncedSearch}"` : 'No contacts found'}
                       </div>
+                      <div className="text-xs text-slate-400 leading-relaxed">
+                        {debouncedSearch ? (
+                          <span>
+                            No contacts in your customer repository matched the phone, name, email, URN, or Sr. No for <strong className="text-slate-200 font-mono">"{debouncedSearch}"</strong>.
+                          </span>
+                        ) : (
+                          <span>
+                            Try adjusting your search criteria, clearing filters, or adding a new contact above.
+                          </span>
+                        )}
+                      </div>
+                      {debouncedSearch && (
+                        <div className="pt-2">
+                          <button
+                            onClick={handleClearSearch}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all shadow-md flex items-center gap-1.5 mx-auto"
+                          >
+                            <X size={14} />
+                            <span>Reset Search Filter</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </td>
                 </tr>
