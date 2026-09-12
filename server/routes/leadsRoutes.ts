@@ -30,12 +30,30 @@ export interface IngestJob {
 
 export const activeIngestJobs = new Map<string, IngestJob>();
 
+export interface WipeJob {
+  jobId: string;
+  companyName: string;
+  totalToDelete: number;
+  deleted: number;
+  percent: number;
+  status: 'processing' | 'completed' | 'failed';
+  error?: string;
+  startedAt: number;
+}
+
+export const activeWipeJobs = new Map<string, WipeJob>();
+
 // Clean up old jobs after 1 hour
 setInterval(() => {
   const oneHourAgo = Date.now() - 60 * 60 * 1000;
   for (const [id, job] of activeIngestJobs.entries()) {
     if (job.startedAt < oneHourAgo) {
       activeIngestJobs.delete(id);
+    }
+  }
+  for (const [id, job] of activeWipeJobs.entries()) {
+    if (job.startedAt < oneHourAgo) {
+      activeWipeJobs.delete(id);
     }
   }
 }, 10 * 60 * 1000);
@@ -532,7 +550,7 @@ const handleBatchDelete = async (req: AuthenticatedRequest, res: express.Respons
 router.delete('/batch-delete', authenticateToken, handleBatchDelete);
 router.post('/batch-delete', authenticateToken, handleBatchDelete);
 
-// 8b. Wipe Company Master Data (STRICT: Superadmin Only)
+// 8b. Wipe Company Master Data (STRICT: Superadmin Only - Chunked Background Deletion)
 router.post('/wipe-company', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   if (req.user?.role !== 'superadmin') {
     res.status(403).json({ success: false, message: 'Access denied: Only Superadmin can wipe company master data.' });
@@ -566,42 +584,150 @@ router.post('/wipe-company', authenticateToken, async (req: AuthenticatedRequest
       return;
     }
 
-    // Delete all master contacts for this company using indexed lower trim matching
-    const delRes = await query(
-      `DELETE FROM campaign_master_leads 
+    // Count total rows to delete first
+    const countRes = await query(
+      `SELECT COUNT(*) as count FROM campaign_master_leads 
        WHERE LOWER(TRIM(company_name)) = LOWER(TRIM($1))`,
       [trimmedCompany]
     );
+    const totalToDelete = parseInt(countRes.rows[0]?.count || '0', 10);
 
-    const deletedCount = delRes.rowCount || 0;
+    if (totalToDelete === 0) {
+      res.json({
+        success: true,
+        deletedCount: 0,
+        message: `No contacts found for company "${trimmedCompany}".`,
+      });
+      return;
+    }
 
-    await logAdminAudit(
-      req.user!.id,
-      'WIPE_COMPANY_MASTER_DATA',
-      'campaign_master_leads',
-      undefined,
-      { company: trimmedCompany, erasedCount: deletedCount },
-      req.ip
-    );
+    const jobId = crypto.randomUUID();
+    const userId = req.user!.id;
+    const userIp = req.ip;
 
-    emitBroadcastUpdate({
-      type: 'LEADS_UPDATED',
-      action: 'WIPE_COMPANY',
-      company: trimmedCompany,
-      deletedCount,
+    const job: WipeJob = {
+      jobId,
+      companyName: trimmedCompany,
+      totalToDelete,
+      deleted: 0,
+      percent: 0,
+      status: 'processing',
+      startedAt: Date.now(),
+    };
+    activeWipeJobs.set(jobId, job);
+
+    // Respond immediately with 202 Accepted to prevent HTTP / browser timeouts
+    res.status(202).json({
+      success: true,
+      jobId,
+      status: 'processing',
+      totalToDelete,
+      message: `Wipe initiated for ${totalToDelete.toLocaleString()} contacts of "${trimmedCompany}". Erasing in background chunks.`,
     });
 
-    console.log(`[LeadsAPI] Superadmin wiped ${deletedCount} contacts for company "${trimmedCompany}"`);
+    // Execute chunked background deletion in small batches (5,000 rows each)
+    // This prevents table locking and eliminates PostgreSQL statement_timeout (45s)
+    setImmediate(async () => {
+      let totalDeleted = 0;
+      const chunkSize = 5000;
+      try {
+        console.log(`[LeadsAPI] Starting chunked background wipe for "${trimmedCompany}" (${totalToDelete} total)...`);
 
-    res.json({
-      success: true,
-      deletedCount,
-      message: `Successfully erased ${deletedCount.toLocaleString()} contacts from Master Data Center for company "${trimmedCompany}".`,
+        while (true) {
+          const delRes = await query(
+            `DELETE FROM campaign_master_leads 
+             WHERE id IN (
+               SELECT id FROM campaign_master_leads 
+               WHERE LOWER(TRIM(company_name)) = LOWER(TRIM($1))
+               LIMIT $2
+             )`,
+            [trimmedCompany, chunkSize]
+          );
+
+          const countInChunk = delRes.rowCount || 0;
+          if (countInChunk === 0) break;
+
+          totalDeleted += countInChunk;
+          job.deleted = totalDeleted;
+          job.percent = totalToDelete > 0 ? Math.min(100, Math.round((totalDeleted / totalToDelete) * 100)) : 100;
+
+          emitBroadcastUpdate({
+            type: 'WIPE_PROGRESS',
+            jobId,
+            company: trimmedCompany,
+            deleted: totalDeleted,
+            total: totalToDelete,
+            percent: job.percent,
+            status: 'processing',
+          });
+
+          // Brief 15ms pause to allow other database queries to execute smoothly
+          await new Promise((resolve) => setTimeout(resolve, 15));
+        }
+
+        job.status = 'completed';
+        job.percent = 100;
+        job.deleted = totalDeleted;
+
+        await logAdminAudit(
+          userId,
+          'WIPE_COMPANY_MASTER_DATA',
+          'campaign_master_leads',
+          undefined,
+          { company: trimmedCompany, erasedCount: totalDeleted },
+          userIp
+        );
+
+        emitBroadcastUpdate({
+          type: 'WIPE_PROGRESS',
+          jobId,
+          company: trimmedCompany,
+          deleted: totalDeleted,
+          total: totalToDelete,
+          percent: 100,
+          status: 'completed',
+        });
+
+        emitBroadcastUpdate({
+          type: 'LEADS_UPDATED',
+          action: 'WIPE_COMPANY',
+          company: trimmedCompany,
+          deletedCount: totalDeleted,
+        });
+
+        console.log(`[LeadsAPI] Background wipe completed successfully: ${totalDeleted} contacts erased for "${trimmedCompany}"`);
+      } catch (err: any) {
+        console.error(`[LeadsAPI] Background wipe error for "${trimmedCompany}":`, err);
+        job.status = 'failed';
+        job.error = err.message;
+        emitBroadcastUpdate({
+          type: 'WIPE_PROGRESS',
+          jobId,
+          company: trimmedCompany,
+          status: 'failed',
+          error: err.message,
+        });
+      }
     });
   } catch (err: any) {
-    console.error('Wipe company leads error:', err);
+    console.error('Wipe company initiation error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
+});
+
+// 8c. Endpoint to Poll Wipe Status
+router.get('/wipe-status/:jobId', authenticateToken, (req: AuthenticatedRequest, res): void => {
+  if (req.user?.role !== 'superadmin') {
+    res.status(403).json({ success: false, message: 'Access denied.' });
+    return;
+  }
+  const jobId = String(req.params.jobId);
+  const job = activeWipeJobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ success: false, message: 'Wipe job not found.' });
+    return;
+  }
+  res.json({ success: true, job });
 });
 
 // 9. Upload CSV / Excel or Ingest JSON Contacts

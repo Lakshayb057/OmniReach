@@ -72,6 +72,10 @@ export async function initializeDatabase() {
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_address ON campaign_master_leads USING gin (address gin_trgm_ops);`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_master_leads_co_lower_trim ON campaign_master_leads (LOWER(TRIM(company_name)));`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_master_leads_co_ltrim_srno ON campaign_master_leads (LOWER(TRIM(company_name)), sr_no);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_journey_enrollments_lead ON journey_enrollments(master_lead_id);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_ctr_lead ON ctr_clicks(master_lead_id);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_lead ON conversations(master_lead_id);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_campaign_logs_lead ON campaign_logs(master_lead_id);`);
     } catch (trgmErr) {
       console.warn('GIN Trigram extension notice:', trgmErr);
     }
