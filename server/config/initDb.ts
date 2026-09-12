@@ -43,7 +43,19 @@ export async function initializeDatabase() {
       CREATE UNIQUE INDEX IF NOT EXISTS uq_master_leads_phone_idx ON campaign_master_leads(phone) WHERE phone IS NOT NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS uq_master_leads_email_idx ON campaign_master_leads(LOWER(email)) WHERE email IS NOT NULL;
       CREATE INDEX IF NOT EXISTS idx_master_leads_co_optin ON campaign_master_leads(company_name, whatsapp_optin, email_optin);
+      CREATE INDEX IF NOT EXISTS idx_master_leads_created ON campaign_master_leads(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_campaign_logs_broadcast_status ON campaign_logs(broadcast_id, status);
+
+      -- High-Performance Trigram GIN Search Indexes
+      DO $$
+      BEGIN
+        CREATE EXTENSION IF NOT EXISTS pg_trgm;
+        CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_name ON campaign_master_leads USING gin (full_name gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_phone ON campaign_master_leads USING gin (phone gin_trgm_ops);
+        CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_email ON campaign_master_leads USING gin (email gin_trgm_ops);
+      EXCEPTION WHEN OTHERS THEN
+        NULL;
+      END $$;
 
       -- Unchangeable Sr. No for Master Data Center
       ALTER TABLE campaign_master_leads ADD COLUMN IF NOT EXISTS sr_no BIGSERIAL;

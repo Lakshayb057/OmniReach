@@ -17,6 +17,16 @@ import {
   Sparkles,
   RefreshCw,
   X,
+  Plus,
+  Edit3,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  Lock,
+  FileDown,
+  Check,
+  AlertCircle,
+  Building,
 } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { useAuth } from '../context/AuthContext';
@@ -33,11 +43,16 @@ export const MasterDataCenter: React.FC = () => {
   
   // Persisted search & filter
   const [search, setSearch] = useState(() => localStorage.getItem('mdc_search') || '');
+  const [debouncedSearch, setDebouncedSearch] = useState(() => localStorage.getItem('mdc_search') || '');
   const [optinFilter, setOptinFilter] = useState(() => localStorage.getItem('mdc_optin_filter') || 'all');
   const [channelFilter, setChannelFilter] = useState<string>('all');
   const [srNoStart, setSrNoStart] = useState<string>('');
   const [srNoEnd, setSrNoEnd] = useState<string>('');
   
+  // Sorting state
+  const [sortBy, setSortBy] = useState<string>('sr_no');
+  const [sortDir, setSortDir] = useState<'ASC' | 'DESC'>('ASC');
+
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -57,14 +72,59 @@ export const MasterDataCenter: React.FC = () => {
     error?: string;
   } | null>(null);
 
+  // Add Contact Modal State
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addLoading, setAddLoading] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addSuccess, setAddSuccess] = useState<string | null>(null);
+  const [addForm, setAddForm] = useState({
+    full_name: '',
+    phone: '',
+    email: '',
+    city: '',
+    address: '',
+    pan_no: '',
+    whatsapp_optin: true,
+    email_optin: true,
+    company_name: '',
+  });
+
+  // Edit Contact Modal State
+  const [editingLead, setEditingLead] = useState<any | null>(null);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSuccess, setEditSuccess] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    full_name: '',
+    phone: '',
+    email: '',
+    city: '',
+    address: '',
+    pan_no: '',
+    whatsapp_optin: true,
+    email_optin: true,
+  });
+
+  // 300ms Debounce on Search Input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+      localStorage.setItem('mdc_search', search);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Fetch leads on dependency changes
   useEffect(() => {
     localStorage.setItem('mdc_optin_filter', optinFilter);
     fetchLeads();
     if (isSuperadmin) {
       fetchCompanies();
     }
-  }, [page, limit, optinFilter, channelFilter, selectedCompanyFilter]);
+  }, [page, limit, optinFilter, channelFilter, selectedCompanyFilter, debouncedSearch, sortBy, sortDir]);
 
+  // Debounced Sr No Range filter
   useEffect(() => {
     const timer = setTimeout(() => {
       setPage(1);
@@ -161,12 +221,14 @@ export const MasterDataCenter: React.FC = () => {
         params: {
           page,
           limit,
-          search,
+          search: debouncedSearch.trim() || undefined,
           optin_filter: optinFilter !== 'all' ? optinFilter : undefined,
           channel_filter: channelFilter !== 'all' ? channelFilter : undefined,
           sr_no_start: srNoStart ? parseInt(srNoStart, 10) : undefined,
           sr_no_end: srNoEnd ? parseInt(srNoEnd, 10) : undefined,
           company_name: selectedCompanyFilter !== 'all' ? selectedCompanyFilter : undefined,
+          sort_by: sortBy,
+          sort_dir: sortDir,
         },
       });
 
@@ -183,9 +245,30 @@ export const MasterDataCenter: React.FC = () => {
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem('mdc_search', search);
+    setDebouncedSearch(search);
     setPage(1);
     fetchLeads();
+  };
+
+  const handleSort = (column: string) => {
+    if (sortBy === column) {
+      setSortDir((prev) => (prev === 'ASC' ? 'DESC' : 'ASC'));
+    } else {
+      setSortBy(column);
+      setSortDir('ASC');
+    }
+    setPage(1);
+  };
+
+  const renderSortIndicator = (column: string) => {
+    if (sortBy !== column) {
+      return <ArrowUpDown size={12} className="text-slate-600 opacity-60 ml-1 inline" />;
+    }
+    return sortDir === 'ASC' ? (
+      <ArrowUp size={12} className="text-blue-400 ml-1 inline font-bold" />
+    ) : (
+      <ArrowDown size={12} className="text-blue-400 ml-1 inline font-bold" />
+    );
   };
 
   const handleToggleOptin = async (leadId: string, channel: 'whatsapp' | 'email', currentVal: boolean) => {
@@ -196,7 +279,7 @@ export const MasterDataCenter: React.FC = () => {
         status: !currentVal,
       });
 
-      if (res.data.success) {
+      if (res.data.success && res.data.lead) {
         setLeads((prev) =>
           prev.map((l) => (l.id === leadId ? { ...l, ...res.data.lead } : l))
         );
@@ -222,18 +305,127 @@ export const MasterDataCenter: React.FC = () => {
     }
   };
 
-  const handleBatchDelete = async () => {
-    if (!confirm(`Are you sure you want to delete ${selectedLeads.length} selected contacts?`)) return;
+  const handleDeleteSingle = async (lead: any) => {
+    if (!confirm(`Are you sure you want to permanently remove contact #${lead.sr_no || ''} (${lead.full_name})?`)) return;
     try {
-      const res = await axios.delete('/api/leads/batch-delete', {
-        data: { lead_ids: selectedLeads },
+      const res = await axios.delete(`/api/leads/${lead.id}`);
+      if (res.data.success) {
+        setSelectedLeads((prev) => prev.filter((id) => id !== lead.id));
+        fetchLeads();
+      }
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to delete contact.');
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (!confirm(`Are you sure you want to permanently delete ${selectedLeads.length} selected contacts?`)) return;
+    try {
+      const res = await axios.post('/api/leads/batch-delete', {
+        lead_ids: selectedLeads,
       });
       if (res.data.success) {
         setSelectedLeads([]);
         fetchLeads();
       }
-    } catch (err) {
-      alert('Failed to delete selected contacts.');
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to delete selected contacts.');
+    }
+  };
+
+  const handleExportCsv = () => {
+    const params = new URLSearchParams();
+    if (debouncedSearch.trim()) params.append('search', debouncedSearch.trim());
+    if (optinFilter !== 'all') params.append('optin_filter', optinFilter);
+    if (channelFilter !== 'all') params.append('channel_filter', channelFilter);
+    if (srNoStart) params.append('sr_no_start', srNoStart);
+    if (srNoEnd) params.append('sr_no_end', srNoEnd);
+    if (selectedCompanyFilter !== 'all') params.append('company_name', selectedCompanyFilter);
+
+    const token = localStorage.getItem('token');
+    const exportUrl = `/api/leads/export?${params.toString()}`;
+    
+    // Trigger download via link with auth
+    const a = document.createElement('a');
+    a.href = exportUrl;
+    // Direct link with authorization cookie/session
+    window.open(exportUrl, '_blank');
+  };
+
+  const handleOpenEdit = (lead: any) => {
+    setEditingLead(lead);
+    setEditError(null);
+    setEditSuccess(null);
+    setEditForm({
+      full_name: lead.full_name || '',
+      phone: lead.phone ? (lead.phone.startsWith('91') && lead.phone.length === 12 ? lead.phone.substring(2) : lead.phone) : '',
+      email: lead.email || '',
+      city: lead.city || '',
+      address: lead.address || '',
+      pan_no: lead.pan_no || '',
+      whatsapp_optin: lead.whatsapp_optin ?? true,
+      email_optin: lead.email_optin ?? true,
+    });
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingLead) return;
+
+    try {
+      setEditLoading(true);
+      setEditError(null);
+      const res = await axios.put(`/api/leads/${editingLead.id}`, editForm);
+      if (res.data.success) {
+        setEditSuccess('Contact updated successfully!');
+        setLeads((prev) => prev.map((l) => (l.id === editingLead.id ? { ...l, ...res.data.lead } : l)));
+        setTimeout(() => {
+          setEditingLead(null);
+          setEditSuccess(null);
+        }, 800);
+      }
+    } catch (err: any) {
+      setEditError(err.response?.data?.message || 'Failed to update contact.');
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleCreateContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!addForm.phone && !addForm.email) {
+      setAddError('Please provide at least a Phone Number or Email Address.');
+      return;
+    }
+
+    try {
+      setAddLoading(true);
+      setAddError(null);
+      setAddSuccess(null);
+      const res = await axios.post('/api/leads', addForm);
+      if (res.data.success) {
+        setAddSuccess(res.data.message || 'Contact added successfully!');
+        fetchLeads();
+        setAddForm({
+          full_name: '',
+          phone: '',
+          email: '',
+          city: '',
+          address: '',
+          pan_no: '',
+          whatsapp_optin: true,
+          email_optin: true,
+          company_name: '',
+        });
+        setTimeout(() => {
+          setShowAddModal(false);
+          setAddSuccess(null);
+        }, 1200);
+      }
+    } catch (err: any) {
+      setAddError(err.response?.data?.message || 'Failed to create contact.');
+    } finally {
+      setAddLoading(false);
     }
   };
 
@@ -305,35 +497,60 @@ export const MasterDataCenter: React.FC = () => {
               Module 2: Master Data Center
             </span>
             <span className="text-xs text-slate-500">•</span>
-            <span className="text-xs text-emerald-400 font-semibold">Zero-Duplicate Upsert Engine</span>
+            <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1">
+              <Sparkles size={12} />
+              High-Speed Trigram Substring Search
+            </span>
           </div>
           <h1 className="text-2xl font-extrabold text-white tracking-tight">
-            Customer Repository & URN Mapping
+            Customer Repository & URN Data Center
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Indexed by phone & email with OmniReach Leads Ground Truth matching and sequential FMCB generation
+            Zero-duplicate priority phone matching • Immutable sequential Sr. No • Fast multi-column filtering
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <button
+            onClick={handleExportCsv}
+            className="px-3.5 py-2 rounded-xl bg-[#070b14] hover:bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition-colors border border-slate-800"
+            title="Download CSV of current filtered contacts"
+          >
+            <FileDown size={14} className="text-emerald-400" />
+            <span>Export CSV</span>
+          </button>
+
           <a
             href="/api/leads/sample-template"
             target="_blank"
-            className="px-3.5 py-2 rounded-xl bg-[#070b14] hover:bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition-colors border border-slate-800"
+            className="px-3 py-2 rounded-xl bg-[#070b14] hover:bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-1.5 transition-colors border border-slate-800"
           >
             <Download size={14} />
-            <span>Sample CSV</span>
+            <span>Sample Template</span>
           </a>
+
           <button
             onClick={() => {
               setUploadReport(null);
               setUploadFile(null);
               setShowUploadModal(true);
             }}
+            className="px-3.5 py-2 rounded-xl bg-[#070b14] hover:bg-slate-800 text-slate-200 text-xs font-bold border border-slate-700 flex items-center gap-1.5 transition-all"
+          >
+            <Upload size={14} className="text-blue-400" />
+            <span>Bulk Ingest</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setAddError(null);
+              setAddSuccess(null);
+              setShowAddModal(true);
+            }}
             className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-blue-600/25 flex items-center gap-1.5 transition-all hover:scale-[1.02]"
           >
-            <Upload size={14} />
-            <span>Ingest Contacts</span>
+            <Plus size={15} />
+            <span>Add Contact</span>
           </button>
         </div>
       </div>
@@ -345,31 +562,40 @@ export const MasterDataCenter: React.FC = () => {
             <Search size={15} className="absolute left-3.5 top-2.5 text-slate-500" />
             <input
               type="text"
-              placeholder="Search by Name, Phone, Email, URN, FMCB..."
+              placeholder="Search Name, Phone, Email, URN, FMCB, City..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-[#070b14] border border-slate-800 rounded-xl pl-10 pr-4 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              className="w-full bg-[#070b14] border border-slate-800 rounded-xl pl-10 pr-9 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
             />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300 transition-colors"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
           <button
             type="submit"
-            className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl transition-colors"
+            className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl transition-colors shrink-0"
           >
             Search
           </button>
         </form>
 
-        <div className="flex items-center gap-3 w-full md:w-auto justify-end flex-wrap">
+        <div className="flex items-center gap-2.5 w-full md:w-auto justify-end flex-wrap">
           {isSuperadmin && (
             <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
-              <span>Company:</span>
+              <Building size={13} className="text-cyan-400" />
               <select
                 value={selectedCompanyFilter}
                 onChange={(e) => {
                   setSelectedCompanyFilter(e.target.value);
                   setPage(1);
                 }}
-                className="bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                className="bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
               >
                 <option value="all">🏢 All Companies ({companies.length})</option>
                 {companies.map((c) => (
@@ -381,11 +607,6 @@ export const MasterDataCenter: React.FC = () => {
             </div>
           )}
 
-          <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
-            <Filter size={14} />
-            <span>Filter:</span>
-          </div>
-
           <div className="flex items-center gap-1">
             <span className="text-slate-500 font-mono text-xs">#</span>
             <input
@@ -393,7 +614,7 @@ export const MasterDataCenter: React.FC = () => {
               placeholder="From Sr."
               value={srNoStart}
               onChange={(e) => setSrNoStart(e.target.value)}
-              className="w-20 bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-18 bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
             <span className="text-slate-500 text-xs">-</span>
             <input
@@ -401,7 +622,7 @@ export const MasterDataCenter: React.FC = () => {
               placeholder="To Sr."
               value={srNoEnd}
               onChange={(e) => setSrNoEnd(e.target.value)}
-              className="w-20 bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+              className="w-18 bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
           </div>
 
@@ -411,7 +632,7 @@ export const MasterDataCenter: React.FC = () => {
               setChannelFilter(e.target.value);
               setPage(1);
             }}
-            className="bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+            className="bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
           >
             <option value="all">All Channels</option>
             <option value="phone_only">Phone Only</option>
@@ -425,17 +646,37 @@ export const MasterDataCenter: React.FC = () => {
               setOptinFilter(e.target.value);
               setPage(1);
             }}
-            className="bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+            className="bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
           >
             <option value="all">All Contacts ({total.toLocaleString()})</option>
+            <option value="whatsapp_optin">WhatsApp Opted-In</option>
+            <option value="email_optin">Email Opted-In</option>
             <option value="whatsapp_optout">WhatsApp Opted-Out</option>
             <option value="email_optout">Email Opted-Out</option>
             <option value="all_optout">Fully Unsubscribed</option>
           </select>
 
-          {(srNoStart || srNoEnd || channelFilter !== 'all' || optinFilter !== 'all') && (
+          <select
+            value={limit}
+            onChange={(e) => {
+              setLimit(parseInt(e.target.value, 10));
+              setPage(1);
+            }}
+            className="bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs text-slate-300 focus:outline-none focus:border-blue-500"
+            title="Rows per page"
+          >
+            <option value="25">25 / page</option>
+            <option value="50">50 / page</option>
+            <option value="100">100 / page</option>
+            <option value="250">250 / page</option>
+            <option value="500">500 / page</option>
+          </select>
+
+          {(srNoStart || srNoEnd || channelFilter !== 'all' || optinFilter !== 'all' || search) && (
             <button
               onClick={() => {
+                setSearch('');
+                setDebouncedSearch('');
                 setSrNoStart('');
                 setSrNoEnd('');
                 setChannelFilter('all');
@@ -443,29 +684,60 @@ export const MasterDataCenter: React.FC = () => {
                 setPage(1);
               }}
               className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors"
-              title="Reset Filters"
+              title="Reset all filters"
             >
               <X size={14} />
             </button>
           )}
-
-          {isSuperadmin && selectedLeads.length > 0 && (
-            <button
-              onClick={handleBatchDelete}
-              className="px-3.5 py-2 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 hover:bg-rose-500/20 transition-colors cursor-pointer"
-            >
-              <Trash2 size={14} />
-              <span>Delete ({selectedLeads.length})</span>
-            </button>
-          )}
         </div>
+      </div>
+
+      {/* Quick Sr. No Range Presets */}
+      <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
+        <span className="font-semibold text-slate-500 flex items-center gap-1">
+          <Filter size={12} />
+          Quick Sr. Range:
+        </span>
+        {[
+          { label: 'Top 100', start: '1', end: '100' },
+          { label: 'Top 250', start: '1', end: '250' },
+          { label: 'Top 500', start: '1', end: '500' },
+          { label: 'Top 1,000', start: '1', end: '1000' },
+          { label: 'Top 5,000', start: '1', end: '5000' },
+        ].map((preset) => (
+          <button
+            key={preset.label}
+            onClick={() => {
+              setSrNoStart(preset.start);
+              setSrNoEnd(preset.end);
+            }}
+            className={`px-2.5 py-1 rounded-lg border text-[11px] font-mono transition-colors ${
+              srNoStart === preset.start && srNoEnd === preset.end
+                ? 'bg-blue-600/20 text-blue-400 border-blue-500/40 font-bold'
+                : 'bg-[#070b14] text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-slate-200'
+            }`}
+          >
+            #{preset.label}
+          </button>
+        ))}
+        {(srNoStart || srNoEnd) && (
+          <button
+            onClick={() => {
+              setSrNoStart('');
+              setSrNoEnd('');
+            }}
+            className="text-[11px] text-rose-400 hover:underline ml-1"
+          >
+            Clear Sr. Range
+          </button>
+        )}
       </div>
 
       {/* Master Contacts Table */}
       <div className="bg-[#0f172a] border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-[#070b14] text-slate-400 border-b border-slate-800 font-semibold">
+            <thead className="bg-[#070b14] text-slate-400 border-b border-slate-800 font-semibold select-none">
               <tr>
                 <th className="p-3.5 w-10 text-center">
                   <input
@@ -475,29 +747,75 @@ export const MasterDataCenter: React.FC = () => {
                     className="rounded bg-[#070b14] border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
                   />
                 </th>
-                <th className="p-3.5 w-16 text-center">Sr. No</th>
+                <th
+                  onClick={() => handleSort('sr_no')}
+                  className="p-3.5 w-20 text-center cursor-pointer hover:text-slate-200 transition-colors"
+                >
+                  <span>Sr. No</span>
+                  {renderSortIndicator('sr_no')}
+                </th>
                 {isSuperadmin && <th className="p-3.5">Company</th>}
-                <th className="p-3.5">Customer Name & City</th>
+                <th
+                  onClick={() => handleSort('full_name')}
+                  className="p-3.5 cursor-pointer hover:text-slate-200 transition-colors"
+                >
+                  <span>Customer Name & City</span>
+                  {renderSortIndicator('full_name')}
+                </th>
                 <th className="p-3.5">URN / Sequential FMCB</th>
-                <th className="p-3.5">Phone & Email</th>
+                <th
+                  onClick={() => handleSort('phone')}
+                  className="p-3.5 cursor-pointer hover:text-slate-200 transition-colors"
+                >
+                  <span>Phone & Email</span>
+                  {renderSortIndicator('phone')}
+                </th>
                 <th className="p-3.5">WhatsApp Opt-in</th>
                 <th className="p-3.5">Email Opt-in</th>
-                <th className="p-3.5">Lifetime Engagement</th>
-                <th className="p-3.5">Last Contacted</th>
+                <th
+                  onClick={() => handleSort('whatsapp_sent_count')}
+                  className="p-3.5 cursor-pointer hover:text-slate-200 transition-colors"
+                >
+                  <span>Engagement</span>
+                  {renderSortIndicator('whatsapp_sent_count')}
+                </th>
+                <th
+                  onClick={() => handleSort('created_at')}
+                  className="p-3.5 cursor-pointer hover:text-slate-200 transition-colors"
+                >
+                  <span>Registered</span>
+                  {renderSortIndicator('created_at')}
+                </th>
+                <th className="p-3.5 text-center w-24">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80 text-slate-300">
-              {leads.length === 0 ? (
+              {isLoading ? (
                 <tr>
-                  <td colSpan={isSuperadmin ? 10 : 9} className="p-8 text-center text-slate-500">
-                    No contacts found matching your query.
+                  <td colSpan={isSuperadmin ? 11 : 10} className="p-12 text-center text-slate-400">
+                    <div className="flex items-center justify-center gap-2">
+                      <RefreshCw size={18} className="animate-spin text-blue-400" />
+                      <span>Fetching contacts with sub-millisecond query engine...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : leads.length === 0 ? (
+                <tr>
+                  <td colSpan={isSuperadmin ? 11 : 10} className="p-12 text-center text-slate-500">
+                    <div className="max-w-sm mx-auto space-y-2">
+                      <Users size={32} className="mx-auto text-slate-600 mb-2" />
+                      <div className="text-sm font-semibold text-slate-300">No contacts found</div>
+                      <div className="text-xs text-slate-500">
+                        Try adjusting your search criteria, clearing filters, or adding a new contact above.
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ) : (
                 leads.map((lead) => (
                   <tr
                     key={lead.id}
-                    className={`hover:bg-[#070b14]/50 transition-colors ${
+                    className={`hover:bg-[#070b14]/60 transition-colors ${
                       selectedLeads.includes(lead.id) ? 'bg-blue-600/10' : ''
                     }`}
                   >
@@ -509,7 +827,7 @@ export const MasterDataCenter: React.FC = () => {
                         className="rounded bg-[#070b14] border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
                       />
                     </td>
-                    <td className="p-3.5 text-center font-mono font-bold text-amber-400/90 text-xs">
+                    <td className="p-3.5 text-center font-mono font-bold text-amber-400 text-xs">
                       #{lead.sr_no || '—'}
                     </td>
                     {isSuperadmin && (
@@ -520,38 +838,46 @@ export const MasterDataCenter: React.FC = () => {
                       </td>
                     )}
                     <td className="p-3.5">
-                      <div className="font-bold text-white">{lead.full_name}</div>
-                      <div className="text-[11px] text-slate-400">{lead.city || lead.address || 'India'}</div>
+                      <div className="font-bold text-white text-xs">{lead.full_name}</div>
+                      <div className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
+                        <span>{lead.city || lead.address || 'India'}</span>
+                        {lead.pan_no && (
+                          <span className="font-mono text-[10px] text-slate-500 ml-1">
+                            [{lead.pan_no}]
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="p-3.5">
                       {lead.urn ? (
-                        <span className="px-2.5 py-0.5 rounded text-[10px] font-extrabold bg-purple-500/10 text-purple-400 border border-purple-500/30 font-mono">
+                        <span className="px-2.5 py-0.5 rounded text-[10px] font-extrabold bg-purple-500/10 text-purple-400 border border-purple-500/30 font-mono inline-block">
                           {lead.urn}
                         </span>
                       ) : (
-                        <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-mono">
+                        <span className="px-2.5 py-0.5 rounded text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-mono inline-block">
                           {lead.fmcb_id}
                         </span>
                       )}
                     </td>
                     <td className="p-3.5">
-                      <div className="font-mono text-slate-200 flex items-center gap-1 font-semibold">
-                        <Smartphone size={12} className="text-emerald-400" />
+                      <div className="font-mono text-slate-200 flex items-center gap-1.5 font-semibold">
+                        <Smartphone size={12} className="text-emerald-400 shrink-0" />
                         <span>{lead.phone ? `+${lead.phone}` : <span className="text-slate-500 font-sans font-normal italic text-[11px]">No phone</span>}</span>
                       </div>
-                      <div className="text-[11px] text-slate-400 flex items-center gap-1">
-                        <Mail size={12} className="text-blue-400" />
-                        <span>{lead.email || <span className="text-slate-500 italic">No email registered</span>}</span>
+                      <div className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
+                        <Mail size={12} className="text-blue-400 shrink-0" />
+                        <span>{lead.email || <span className="text-slate-500 italic">No email</span>}</span>
                       </div>
                     </td>
                     <td className="p-3.5">
                       <button
                         onClick={() => handleToggleOptin(lead.id, 'whatsapp', lead.whatsapp_optin)}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1.5 ${
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1.5 cursor-pointer ${
                           lead.whatsapp_optin
                             ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20'
                             : 'bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20'
                         }`}
+                        title="Click to toggle WhatsApp opt-in status"
                       >
                         {lead.whatsapp_optin ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
                         <span>{lead.whatsapp_optin ? 'Opted-In' : 'Opted-Out'}</span>
@@ -560,11 +886,12 @@ export const MasterDataCenter: React.FC = () => {
                     <td className="p-3.5">
                       <button
                         onClick={() => handleToggleOptin(lead.id, 'email', lead.email_optin)}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1.5 ${
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-colors flex items-center gap-1.5 cursor-pointer ${
                           lead.email_optin
                             ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20'
                             : 'bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20'
                         }`}
+                        title="Click to toggle Email opt-in status"
                       >
                         {lead.email_optin ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
                         <span>{lead.email_optin ? 'Opted-In' : 'Opted-Out'}</span>
@@ -574,12 +901,30 @@ export const MasterDataCenter: React.FC = () => {
                       <div className="text-[11px] text-slate-300">
                         WA: <span className="font-bold text-emerald-400">{lead.whatsapp_sent_count || 0}</span> | Email: <span className="font-bold text-blue-400">{lead.email_sent_count || 0}</span>
                       </div>
-                      <div className="text-[10px] text-amber-400 font-semibold">
+                      <div className="text-[10px] text-amber-400 font-semibold mt-0.5">
                         Clicks: {lead.clicked_count || 0}
                       </div>
                     </td>
                     <td className="p-3.5 text-slate-400 text-[11px]">
-                      {lead.last_contacted_at ? new Date(lead.last_contacted_at).toLocaleDateString() : 'Never'}
+                      {lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '—'}
+                    </td>
+                    <td className="p-3.5 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          onClick={() => handleOpenEdit(lead)}
+                          className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/20 transition-colors"
+                          title="Edit Contact"
+                        >
+                          <Edit3 size={13} />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteSingle(lead)}
+                          className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20 transition-colors"
+                          title="Delete Contact"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -589,11 +934,19 @@ export const MasterDataCenter: React.FC = () => {
         </div>
 
         {/* Pagination Bar */}
-        <div className="px-6 py-4 bg-[#070b14] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400 font-medium">
+        <div className="px-6 py-4 bg-[#070b14] border-t border-slate-800 flex items-center justify-between text-xs text-slate-400 font-medium flex-wrap gap-3">
           <div>
-            Showing {leads.length} of {total} contacts
+            Showing <strong className="text-slate-200">{leads.length}</strong> of <strong className="text-slate-200">{total.toLocaleString()}</strong> contacts
           </div>
           <div className="flex items-center space-x-2">
+            <button
+              disabled={page === 1}
+              onClick={() => setPage(1)}
+              className="px-2.5 py-1.5 rounded-lg bg-[#0f172a] border border-slate-800 disabled:opacity-40 hover:bg-slate-800 text-slate-300 shadow-sm"
+              title="First Page"
+            >
+              « First
+            </button>
             <button
               disabled={page === 1}
               onClick={() => setPage(page - 1)}
@@ -601,7 +954,9 @@ export const MasterDataCenter: React.FC = () => {
             >
               Previous
             </button>
-            <span className="text-white font-bold">Page {page}</span>
+            <span className="text-white font-bold px-2">
+              Page {page} of {Math.ceil(total / limit) || 1}
+            </span>
             <button
               disabled={page * limit >= total}
               onClick={() => setPage(page + 1)}
@@ -609,14 +964,390 @@ export const MasterDataCenter: React.FC = () => {
             >
               Next
             </button>
+            <button
+              disabled={page * limit >= total}
+              onClick={() => setPage(Math.ceil(total / limit) || 1)}
+              className="px-2.5 py-1.5 rounded-lg bg-[#0f172a] border border-slate-800 disabled:opacity-40 hover:bg-slate-800 text-slate-300 shadow-sm"
+              title="Last Page"
+            >
+              Last »
+            </button>
           </div>
         </div>
       </div>
 
-      {/* CSV / Excel Ingest Modal */}
+      {/* Floating Sticky Batch Action Bar */}
+      {selectedLeads.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 bg-[#0f172a] border border-blue-500/40 rounded-2xl px-6 py-3 shadow-2xl flex items-center gap-4 text-xs animate-slideUp backdrop-blur-md">
+          <div className="flex items-center gap-2 text-white font-bold">
+            <CheckCircle2 size={16} className="text-blue-400" />
+            <span>{selectedLeads.length} contacts selected</span>
+          </div>
+          <div className="h-4 w-[1px] bg-slate-700" />
+          <button
+            onClick={() => setSelectedLeads([])}
+            className="text-slate-400 hover:text-slate-200 transition-colors"
+          >
+            Deselect all
+          </button>
+          <button
+            onClick={handleBatchDelete}
+            className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl flex items-center gap-1.5 transition-colors shadow-md"
+          >
+            <Trash2 size={14} />
+            <span>Delete Selected ({selectedLeads.length})</span>
+          </button>
+        </div>
+      )}
+
+      {/* Modal 1: Add New Contact */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-lg bg-[#0f172a] border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-6 py-4 bg-[#070b14] border-b border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Plus size={16} className="text-blue-400" />
+                  Add Master Contact
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Priority phone matching • Auto-sequential FMCB ID & immutable Sr. No
+                </p>
+              </div>
+              <button
+                onClick={() => setShowAddModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateContact} className="p-6 space-y-4 text-xs">
+              {addError && (
+                <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl text-rose-300 flex items-center gap-2">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{addError}</span>
+                </div>
+              )}
+              {addSuccess && (
+                <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2">
+                  <CheckCircle2 size={14} className="shrink-0" />
+                  <span>{addSuccess}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1 md:col-span-2">
+                  <label className="text-slate-300 font-semibold">Full Name *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Rahul Sharma"
+                    value={addForm.full_name}
+                    onChange={(e) => setAddForm({ ...addForm, full_name: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold flex items-center gap-1">
+                    <Smartphone size={12} className="text-emerald-400" />
+                    <span>Phone Number</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. 9876543210 (or with 91)"
+                    value={addForm.phone}
+                    onChange={(e) => setAddForm({ ...addForm, phone: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold flex items-center gap-1">
+                    <Mail size={12} className="text-blue-400" />
+                    <span>Email Address</span>
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="e.g. customer@example.com"
+                    value={addForm.email}
+                    onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold">City</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Mumbai"
+                    value={addForm.city}
+                    onChange={(e) => setAddForm({ ...addForm, city: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold">PAN Number</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. ABCPS1234F"
+                    value={addForm.pan_no}
+                    onChange={(e) => setAddForm({ ...addForm, pan_no: e.target.value.toUpperCase() })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white font-mono uppercase focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1 md:col-span-2">
+                  <label className="text-slate-300 font-semibold">Address / Notes</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Flat 101, Bandra West"
+                    value={addForm.address}
+                    onChange={(e) => setAddForm({ ...addForm, address: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                {isSuperadmin && (
+                  <div className="space-y-1 md:col-span-2">
+                    <label className="text-slate-300 font-semibold">Assign to Company</label>
+                    <select
+                      value={addForm.company_name}
+                      onChange={(e) => setAddForm({ ...addForm, company_name: e.target.value })}
+                      className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="">OmniReach Global (Default)</option>
+                      {companies.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {/* Opt-in Preferences */}
+              <div className="pt-2 border-t border-slate-800 flex items-center gap-6">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={addForm.whatsapp_optin}
+                    onChange={(e) => setAddForm({ ...addForm, whatsapp_optin: e.target.checked })}
+                    className="rounded bg-[#070b14] border-slate-700 text-emerald-500 focus:ring-0"
+                  />
+                  <span className="text-slate-300 font-semibold">WhatsApp Opted-In</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={addForm.email_optin}
+                    onChange={(e) => setAddForm({ ...addForm, email_optin: e.target.checked })}
+                    className="rounded bg-[#070b14] border-slate-700 text-blue-500 focus:ring-0"
+                  />
+                  <span className="text-slate-300 font-semibold">Email Opted-In</span>
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="px-4 py-2 bg-[#070b14] hover:bg-slate-800 text-slate-300 rounded-xl border border-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={addLoading}
+                  className="px-5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all flex items-center gap-1.5"
+                >
+                  {addLoading ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Saving Contact...</span>
+                    </>
+                  ) : (
+                    'Save Contact'
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 2: Edit Contact */}
+      {editingLead && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
+          <div className="w-full max-w-lg bg-[#0f172a] border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="px-6 py-4 bg-[#070b14] border-b border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Edit3 size={16} className="text-blue-400" />
+                  Edit Contact
+                </h3>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="flex items-center gap-1 text-[11px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+                    <Lock size={10} />
+                    Sr. No #{editingLead.sr_no} (Immutable)
+                  </span>
+                  <span className="text-[11px] font-mono text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/30">
+                    {editingLead.urn || editingLead.fmcb_id}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingLead(null)}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="p-6 space-y-4 text-xs">
+              {editError && (
+                <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-xl text-rose-300 flex items-center gap-2">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{editError}</span>
+                </div>
+              )}
+              {editSuccess && (
+                <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2">
+                  <CheckCircle2 size={14} className="shrink-0" />
+                  <span>{editSuccess}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1 md:col-span-2">
+                  <label className="text-slate-300 font-semibold">Customer Full Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={editForm.full_name}
+                    onChange={(e) => setEditForm({ ...editForm, full_name: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold flex items-center gap-1">
+                    <Smartphone size={12} className="text-emerald-400" />
+                    <span>Phone Number</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="9876543210"
+                    value={editForm.phone}
+                    onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white font-mono focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold flex items-center gap-1">
+                    <Mail size={12} className="text-blue-400" />
+                    <span>Email Address</span>
+                  </label>
+                  <input
+                    type="email"
+                    placeholder="name@domain.com"
+                    value={editForm.email}
+                    onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold">City</label>
+                  <input
+                    type="text"
+                    value={editForm.city}
+                    onChange={(e) => setEditForm({ ...editForm, city: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-slate-300 font-semibold">PAN Number</label>
+                  <input
+                    type="text"
+                    value={editForm.pan_no}
+                    onChange={(e) => setEditForm({ ...editForm, pan_no: e.target.value.toUpperCase() })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white font-mono uppercase focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div className="space-y-1 md:col-span-2">
+                  <label className="text-slate-300 font-semibold">Address</label>
+                  <input
+                    type="text"
+                    value={editForm.address}
+                    onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Opt-in Preferences */}
+              <div className="pt-2 border-t border-slate-800 flex items-center gap-6">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editForm.whatsapp_optin}
+                    onChange={(e) => setEditForm({ ...editForm, whatsapp_optin: e.target.checked })}
+                    className="rounded bg-[#070b14] border-slate-700 text-emerald-500 focus:ring-0"
+                  />
+                  <span className="text-slate-300 font-semibold">WhatsApp Opted-In</span>
+                </label>
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editForm.email_optin}
+                    onChange={(e) => setEditForm({ ...editForm, email_optin: e.target.checked })}
+                    className="rounded bg-[#070b14] border-slate-700 text-blue-500 focus:ring-0"
+                  />
+                  <span className="text-slate-300 font-semibold">Email Opted-In</span>
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setEditingLead(null)}
+                  className="px-4 py-2 bg-[#070b14] hover:bg-slate-800 text-slate-300 rounded-xl border border-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editLoading}
+                  className="px-5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all flex items-center gap-1.5"
+                >
+                  {editLoading ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Updating...</span>
+                    </>
+                  ) : (
+                    'Save Changes'
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 3: CSV / Excel Ingest Modal */}
       {showUploadModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
-          <div className="w-full max-w-lg bg-[#0f172a] border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+          <div className="w-full max-w-lg bg-[#0f172a] border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col">
             <div className="px-6 py-4 bg-[#070b14] border-b border-slate-800 flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-bold text-white">Ingest Contact Data</h3>

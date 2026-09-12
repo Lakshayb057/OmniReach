@@ -3,8 +3,14 @@ import multer from 'multer';
 import crypto from 'crypto';
 import * as xlsx from 'xlsx';
 import { query } from '../config/db';
-import { authenticateToken, requireSuperadmin, logAdminAudit, AuthenticatedRequest } from '../middleware/auth';
-import { ingestContactsBatch, RawContactInput } from '../services/leadsMatcher';
+import { authenticateToken, logAdminAudit, AuthenticatedRequest } from '../middleware/auth';
+import { 
+  ingestContactsBatch, 
+  RawContactInput, 
+  normalizePhone, 
+  validateEmail, 
+  getNextFmcbId 
+} from '../services/leadsMatcher';
 import { emitBroadcastUpdate } from '../services/worker';
 
 export interface IngestJob {
@@ -49,136 +55,126 @@ function getCompanyCondition(req: AuthenticatedRequest, startingIndex: number): 
   return { clause: `company_name = $${startingIndex}`, params: [compName] };
 }
 
-// 1. Get Paginated Master Contacts (Company Isolated)
-router.get('/', authenticateToken, async (req: AuthenticatedRequest, res) => {
-  const { search, optin_filter, page = '1', limit = '50' } = req.query;
+// Helper to build reusable WHERE clauses across GET /, GET /count, and GET /export
+function buildLeadsWhereClause(req: AuthenticatedRequest) {
+  const { search, optin_filter, channel_filter, sr_no_start, sr_no_end } = req.query;
+  const params: any[] = [];
+  const whereClauses: string[] = [];
 
-  try {
-    const offset = (parseInt(page as string, 10) - 1) * parseInt(limit as string, 10);
-    const params: any[] = [];
-    let whereClauses: string[] = [];
+  const compCond = getCompanyCondition(req, params.length + 1);
+  if (compCond.clause) {
+    whereClauses.push(compCond.clause);
+    params.push(...compCond.params);
+  }
 
-    const compCond = getCompanyCondition(req, params.length + 1);
-    if (compCond.clause) {
-      whereClauses.push(compCond.clause);
-      params.push(...compCond.params);
-    }
+  if (search && String(search).trim().length > 0) {
+    params.push(`%${String(search).trim()}%`);
+    const pIdx = params.length;
+    whereClauses.push(
+      `(full_name ILIKE $${pIdx} OR phone ILIKE $${pIdx} OR email ILIKE $${pIdx} OR urn ILIKE $${pIdx} OR fmcb_id ILIKE $${pIdx} OR city ILIKE $${pIdx} OR pan_no ILIKE $${pIdx})`
+    );
+  }
 
-    if (search && String(search).trim().length > 0) {
-      params.push(`%${String(search).trim()}%`);
-      whereClauses.push(
-        `(full_name ILIKE $${params.length} OR phone ILIKE $${params.length} OR email ILIKE $${params.length} OR urn ILIKE $${params.length} OR fmcb_id ILIKE $${params.length})`
-      );
-    }
-
-    if (req.query.sr_no_start) {
-      params.push(parseInt(req.query.sr_no_start as string, 10));
+  if (sr_no_start) {
+    const s = parseInt(sr_no_start as string, 10);
+    if (!isNaN(s)) {
+      params.push(s);
       whereClauses.push(`sr_no >= $${params.length}`);
     }
-    if (req.query.sr_no_end) {
-      params.push(parseInt(req.query.sr_no_end as string, 10));
+  }
+  if (sr_no_end) {
+    const e = parseInt(sr_no_end as string, 10);
+    if (!isNaN(e)) {
+      params.push(e);
       whereClauses.push(`sr_no <= $${params.length}`);
     }
+  }
 
-    if (req.query.channel_filter === 'phone_only') {
-      whereClauses.push(`phone IS NOT NULL AND phone != ''`);
-    } else if (req.query.channel_filter === 'email_only') {
-      whereClauses.push(`email IS NOT NULL AND email != ''`);
-    } else if (req.query.channel_filter === 'both') {
-      whereClauses.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
-    }
+  if (channel_filter === 'phone_only') {
+    whereClauses.push(`phone IS NOT NULL AND phone != ''`);
+  } else if (channel_filter === 'email_only') {
+    whereClauses.push(`email IS NOT NULL AND email != ''`);
+  } else if (channel_filter === 'both') {
+    whereClauses.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
+  }
 
-    if (optin_filter === 'whatsapp_optin') {
-      whereClauses.push('whatsapp_optin = true');
-    } else if (optin_filter === 'email_optin') {
-      whereClauses.push('email_optin = true');
-    } else if (optin_filter === 'whatsapp_optout') {
-      whereClauses.push('whatsapp_optin = false');
-    } else if (optin_filter === 'email_optout') {
-      whereClauses.push('email_optin = false');
-    } else if (optin_filter === 'all_optout') {
-      whereClauses.push('(whatsapp_optin = false AND email_optin = false)');
-    }
+  if (optin_filter === 'whatsapp_optin') {
+    whereClauses.push('whatsapp_optin = true');
+  } else if (optin_filter === 'email_optin') {
+    whereClauses.push('email_optin = true');
+  } else if (optin_filter === 'whatsapp_optout') {
+    whereClauses.push('whatsapp_optin = false');
+  } else if (optin_filter === 'email_optout') {
+    whereClauses.push('email_optin = false');
+  } else if (optin_filter === 'all_optout') {
+    whereClauses.push('(whatsapp_optin = false AND email_optin = false)');
+  }
 
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  return { whereSql, params };
+}
 
-    const countRes = await query(
-      `SELECT COUNT(*) FROM campaign_master_leads ${whereSql}`,
-      params
-    );
-    const total = parseInt(countRes.rows[0].count, 10);
+// 1. Get Paginated Master Contacts (Ultra-fast parallel query execution with sorting)
+router.get('/', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { page = '1', limit = '50', sort_by = 'sr_no', sort_dir = 'ASC' } = req.query;
 
-    params.push(parseInt(limit as string, 10), offset);
-    const dataRes = await query(
-      `SELECT * FROM campaign_master_leads 
-       ${whereSql} 
-       ORDER BY sr_no ASC 
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params
-    );
+  try {
+    const { whereSql, params } = buildLeadsWhereClause(req);
+    const pageNum = Math.max(1, parseInt(page as string, 10) || 1);
+    const limitNum = Math.min(500, Math.max(10, parseInt(limit as string, 10) || 50));
+    const offset = (pageNum - 1) * limitNum;
+
+    const validSortColumns: Record<string, string> = {
+      sr_no: 'sr_no',
+      full_name: 'full_name',
+      phone: 'phone',
+      email: 'email',
+      created_at: 'created_at',
+      whatsapp_sent_count: 'whatsapp_sent_count',
+      email_sent_count: 'email_sent_count',
+      last_contacted_at: 'last_contacted_at',
+    };
+
+    const sortColumn = validSortColumns[String(sort_by).toLowerCase()] || 'sr_no';
+    const sortDirection = String(sort_dir).toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+
+    const dataParams = [...params, limitNum, offset];
+
+    // Execute count and paginated select in parallel for maximum throughput
+    const [countRes, dataRes] = await Promise.all([
+      query(`SELECT COUNT(*) FROM campaign_master_leads ${whereSql}`, params),
+      query(
+        `SELECT * FROM campaign_master_leads 
+         ${whereSql} 
+         ORDER BY ${sortColumn} ${sortDirection} 
+         LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`,
+        dataParams
+      ),
+    ]);
+
+    const total = parseInt(countRes.rows[0]?.count || '0', 10);
 
     res.json({
       success: true,
       data: dataRes.rows,
       pagination: {
         total,
-        page: parseInt(page as string, 10),
-        limit: parseInt(limit as string, 10),
-        totalPages: Math.ceil(total / parseInt(limit as string, 10)),
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum) || 1,
       },
     });
   } catch (err: any) {
+    console.error('Error fetching master leads:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Fast audience count and Sr. No boundaries lookup for Campaign Wizard
+// 2. Fast audience count and Sr. No boundaries lookup for Campaign Wizard
 router.get('/count', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   try {
-    const { sr_no_start, sr_no_end, optin_filter, channel_filter, search } = req.query;
-    const params: any[] = [];
-    const whereClauses: string[] = [];
+    const { whereSql, params } = buildLeadsWhereClause(req);
 
-    const compCond = getCompanyCondition(req, params.length + 1);
-    if (compCond.clause) {
-      whereClauses.push(compCond.clause);
-      params.push(...compCond.params);
-    }
-
-    if (sr_no_start) {
-      params.push(parseInt(sr_no_start as string, 10));
-      whereClauses.push(`sr_no >= $${params.length}`);
-    }
-    if (sr_no_end) {
-      params.push(parseInt(sr_no_end as string, 10));
-      whereClauses.push(`sr_no <= $${params.length}`);
-    }
-    if (channel_filter === 'phone_only') {
-      whereClauses.push(`phone IS NOT NULL AND phone != ''`);
-    } else if (channel_filter === 'email_only') {
-      whereClauses.push(`email IS NOT NULL AND email != ''`);
-    } else if (channel_filter === 'both') {
-      whereClauses.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
-    }
-
-    if (optin_filter === 'whatsapp_optin') {
-      whereClauses.push('whatsapp_optin = true');
-    } else if (optin_filter === 'email_optin') {
-      whereClauses.push('email_optin = true');
-    } else if (optin_filter === 'whatsapp_optout') {
-      whereClauses.push('whatsapp_optin = false');
-    } else if (optin_filter === 'email_optout') {
-      whereClauses.push('email_optin = false');
-    }
-
-    if (search && String(search).trim().length > 0) {
-      params.push(`%${String(search).trim()}%`);
-      whereClauses.push(
-        `(full_name ILIKE $${params.length} OR phone ILIKE $${params.length} OR email ILIKE $${params.length} OR urn ILIKE $${params.length} OR fmcb_id ILIKE $${params.length})`
-      );
-    }
-
-    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
     const r = await query(
       `SELECT COUNT(*) as count, MIN(sr_no) as min_sr_no, MAX(sr_no) as max_sr_no 
        FROM campaign_master_leads ${whereSql}`,
@@ -187,16 +183,426 @@ router.get('/count', authenticateToken, async (req: AuthenticatedRequest, res): 
 
     res.json({
       success: true,
-      count: parseInt(r.rows[0].count, 10),
-      min_sr_no: r.rows[0].min_sr_no ? parseInt(r.rows[0].min_sr_no, 10) : 1,
-      max_sr_no: r.rows[0].max_sr_no ? parseInt(r.rows[0].max_sr_no, 10) : 1,
+      count: parseInt(r.rows[0]?.count || '0', 10),
+      min_sr_no: r.rows[0]?.min_sr_no ? parseInt(r.rows[0].min_sr_no, 10) : 1,
+      max_sr_no: r.rows[0]?.max_sr_no ? parseInt(r.rows[0].max_sr_no, 10) : 1,
     });
+  } catch (err: any) {
+    console.error('Error counting master leads:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 3. Export Filtered Contacts to CSV
+router.get('/export', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  try {
+    const { whereSql, params } = buildLeadsWhereClause(req);
+
+    // Stream up to 50,000 rows with fast CSV generation
+    const exportRes = await query(
+      `SELECT sr_no, full_name, phone, email, city, address, pan_no, urn, fmcb_id, company_name,
+              whatsapp_optin, email_optin, whatsapp_sent_count, email_sent_count, clicked_count, created_at
+       FROM campaign_master_leads 
+       ${whereSql} 
+       ORDER BY sr_no ASC 
+       LIMIT 50000`,
+      params
+    );
+
+    const rows = exportRes.rows;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="OmniReach_Master_Contacts_${Date.now()}.csv"`);
+
+    res.write('Sr No,Full Name,Phone,Email,City,Address,PAN,URN,FMCB ID,Company,WhatsApp Optin,Email Optin,WhatsApp Sent,Email Sent,Clicks,Created At\r\n');
+
+    for (const r of rows) {
+      const escapeCsv = (val: any) => {
+        if (val === null || val === undefined) return '';
+        const str = String(val).replace(/"/g, '""');
+        return `"${str}"`;
+      };
+
+      const line = [
+        r.sr_no,
+        escapeCsv(r.full_name),
+        escapeCsv(r.phone ? `+${r.phone}` : ''),
+        escapeCsv(r.email),
+        escapeCsv(r.city),
+        escapeCsv(r.address),
+        escapeCsv(r.pan_no),
+        escapeCsv(r.urn),
+        escapeCsv(r.fmcb_id),
+        escapeCsv(r.company_name),
+        r.whatsapp_optin ? 'YES' : 'NO',
+        r.email_optin ? 'YES' : 'NO',
+        r.whatsapp_sent_count || 0,
+        r.email_sent_count || 0,
+        r.clicked_count || 0,
+        escapeCsv(r.created_at ? new Date(r.created_at).toISOString() : ''),
+      ].join(',');
+
+      res.write(line + '\r\n');
+    }
+
+    res.end();
+  } catch (err: any) {
+    console.error('Master leads export error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 4. Create Single Contact (With Phone Priority Deduplication, auto Sr. No, and URN/FMCB generation)
+router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  try {
+    const {
+      full_name,
+      phone,
+      email,
+      city,
+      address,
+      pan_no,
+      whatsapp_optin = true,
+      email_optin = true,
+      custom_attributes = {},
+    } = req.body;
+
+    const cleanPhone = normalizePhone(phone);
+    const cleanEmail = validateEmail(email);
+
+    if (!cleanPhone && !cleanEmail) {
+      res.status(400).json({
+        success: false,
+        message: 'At least a valid phone number (10-15 digits) or email address is required.',
+      });
+      return;
+    }
+
+    const company = req.user?.role === 'superadmin'
+      ? (req.body.company_name || 'OmniReach Global')
+      : (req.user?.company_name || 'Independent Enterprise');
+
+    const cleanName = (full_name && String(full_name).trim()) || 'Valued Customer';
+    const cleanCity = city ? String(city).trim() : null;
+    const cleanAddress = address ? String(address).trim() : null;
+    const cleanPan = pan_no ? String(pan_no).trim().toUpperCase() : null;
+
+    // Highest Priority Deduplication:
+    // "most priority is contact no.! if the contact match and email changes update the email first"
+    let existingMatch: any = null;
+
+    if (cleanPhone) {
+      const matchByPhone = await query(
+        `SELECT * FROM campaign_master_leads WHERE phone = $1 LIMIT 1`,
+        [cleanPhone]
+      );
+      if (matchByPhone.rows.length > 0) {
+        existingMatch = matchByPhone.rows[0];
+      }
+    }
+
+    if (!existingMatch && cleanEmail) {
+      const matchByEmail = await query(
+        `SELECT * FROM campaign_master_leads WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [cleanEmail]
+      );
+      if (matchByEmail.rows.length > 0) {
+        existingMatch = matchByEmail.rows[0];
+      }
+    }
+
+    if (existingMatch) {
+      // Update existing record, preserving immutable sr_no and urn/fmcb_id
+      const updatedRes = await query(
+        `UPDATE campaign_master_leads
+         SET full_name = CASE WHEN $1 != 'Valued Customer' THEN $1 ELSE full_name END,
+             phone = COALESCE($2, phone),
+             email = COALESCE($3, email),
+             city = COALESCE($4, city),
+             address = COALESCE($5, address),
+             pan_no = COALESCE($6, pan_no),
+             whatsapp_optin = COALESCE($7, whatsapp_optin),
+             email_optin = COALESCE($8, email_optin),
+             custom_attributes = campaign_master_leads.custom_attributes || $9::jsonb,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $10
+         RETURNING *`,
+        [
+          cleanName,
+          cleanPhone || existingMatch.phone,
+          cleanEmail || existingMatch.email,
+          cleanCity || existingMatch.city,
+          cleanAddress || existingMatch.address,
+          cleanPan || existingMatch.pan_no,
+          whatsapp_optin !== undefined ? Boolean(whatsapp_optin) : existingMatch.whatsapp_optin,
+          email_optin !== undefined ? Boolean(email_optin) : existingMatch.email_optin,
+          JSON.stringify(custom_attributes || {}),
+          existingMatch.id,
+        ]
+      );
+
+      res.json({
+        success: true,
+        action: 'updated',
+        lead: updatedRes.rows[0],
+        message: `Existing contact (Sr. No #${existingMatch.sr_no}) matched and updated with priority. Zero duplicates created.`,
+      });
+      return;
+    }
+
+    // New Contact Insertion
+    // Check Leads Repository for URN
+    let assignedUrn: string | null = null;
+    if (cleanPhone) {
+      const urnRes = await query(
+        `SELECT urn FROM leads_repository WHERE phone = $1 LIMIT 1`,
+        [cleanPhone]
+      );
+      if (urnRes.rows.length > 0) {
+        assignedUrn = urnRes.rows[0].urn;
+      }
+    }
+    if (!assignedUrn && cleanEmail) {
+      const urnRes = await query(
+        `SELECT urn FROM leads_repository WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [cleanEmail]
+      );
+      if (urnRes.rows.length > 0) {
+        assignedUrn = urnRes.rows[0].urn;
+      }
+    }
+
+    const fmcbId = await getNextFmcbId();
+
+    const insertRes = await query(
+      `INSERT INTO campaign_master_leads (
+         full_name, phone, email, city, address, pan_no,
+         whatsapp_optin, email_optin, company_name,
+         urn, fmcb_id, custom_attributes
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+       RETURNING *`,
+      [
+        cleanName,
+        cleanPhone,
+        cleanEmail,
+        cleanCity,
+        cleanAddress,
+        cleanPan,
+        Boolean(whatsapp_optin),
+        Boolean(email_optin),
+        company,
+        assignedUrn,
+        fmcbId,
+        JSON.stringify(custom_attributes || {}),
+      ]
+    );
+
+    res.status(201).json({
+      success: true,
+      action: 'created',
+      lead: insertRes.rows[0],
+      message: `Contact successfully created with immutable Sr. No #${insertRes.rows[0].sr_no} and FMCB ID ${fmcbId}.`,
+    });
+  } catch (err: any) {
+    console.error('Error creating contact:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 5. Update Single Contact (Full Edit of Name, Phone, Email, City, Address, PAN, Opt-ins)
+router.put('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { id } = req.params;
+  const {
+    full_name,
+    phone,
+    email,
+    city,
+    address,
+    pan_no,
+    whatsapp_optin,
+    email_optin,
+    custom_attributes,
+  } = req.body;
+
+  try {
+    const existing = await query(`SELECT * FROM campaign_master_leads WHERE id = $1`, [id]);
+    if (existing.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Contact not found.' });
+      return;
+    }
+
+    const lead = existing.rows[0];
+    if (req.user?.role !== 'superadmin' && req.user?.company_name && lead.company_name !== req.user.company_name) {
+      res.status(403).json({ success: false, message: 'Unauthorized: You can only edit contacts belonging to your company.' });
+      return;
+    }
+
+    const cleanPhone = phone !== undefined ? normalizePhone(phone) : lead.phone;
+    const cleanEmail = email !== undefined ? validateEmail(email) : lead.email;
+
+    if (!cleanPhone && !cleanEmail) {
+      res.status(400).json({ success: false, message: 'At least one valid phone or email address is required.' });
+      return;
+    }
+
+    // Check duplicate phone against other contacts
+    if (cleanPhone && cleanPhone !== lead.phone) {
+      const dupPhone = await query(
+        `SELECT id, sr_no FROM campaign_master_leads WHERE phone = $1 AND id != $2 LIMIT 1`,
+        [cleanPhone, id]
+      );
+      if (dupPhone.rows.length > 0) {
+        res.status(400).json({
+          success: false,
+          message: `Phone number is already registered to another contact (Sr. No #${dupPhone.rows[0].sr_no}).`,
+        });
+        return;
+      }
+    }
+
+    // Check duplicate email against other contacts
+    if (cleanEmail && cleanEmail !== lead.email) {
+      const dupEmail = await query(
+        `SELECT id, sr_no FROM campaign_master_leads WHERE LOWER(email) = LOWER($1) AND id != $2 LIMIT 1`,
+        [cleanEmail, id]
+      );
+      if (dupEmail.rows.length > 0) {
+        res.status(400).json({
+          success: false,
+          message: `Email address is already registered to another contact (Sr. No #${dupEmail.rows[0].sr_no}).`,
+        });
+        return;
+      }
+    }
+
+    const updateRes = await query(
+      `UPDATE campaign_master_leads 
+       SET full_name = COALESCE($1, full_name),
+           phone = $2,
+           email = $3,
+           city = COALESCE($4, city),
+           address = COALESCE($5, address),
+           pan_no = COALESCE($6, pan_no),
+           whatsapp_optin = COALESCE($7, whatsapp_optin),
+           email_optin = COALESCE($8, email_optin),
+           custom_attributes = COALESCE($9::jsonb, custom_attributes),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $10
+       RETURNING *`,
+      [
+        full_name !== undefined ? String(full_name).trim() : null,
+        cleanPhone,
+        cleanEmail,
+        city !== undefined ? String(city).trim() : null,
+        address !== undefined ? String(address).trim() : null,
+        pan_no !== undefined ? String(pan_no).trim().toUpperCase() : null,
+        whatsapp_optin !== undefined ? Boolean(whatsapp_optin) : null,
+        email_optin !== undefined ? Boolean(email_optin) : null,
+        custom_attributes ? JSON.stringify(custom_attributes) : null,
+        id,
+      ]
+    );
+
+    res.json({ success: true, lead: updateRes.rows[0], message: 'Contact updated successfully.' });
+  } catch (err: any) {
+    console.error('Error updating contact:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 6. Fast Opt-in Toggle
+router.post('/optin-toggle', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { lead_id, channel, status } = req.body;
+  if (!lead_id || !channel || (channel !== 'whatsapp' && channel !== 'email')) {
+    res.status(400).json({ success: false, message: 'Invalid lead_id or channel specified.' });
+    return;
+  }
+
+  try {
+    const existing = await query(`SELECT * FROM campaign_master_leads WHERE id = $1`, [lead_id]);
+    if (existing.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Contact not found.' });
+      return;
+    }
+
+    const lead = existing.rows[0];
+    if (req.user?.role !== 'superadmin' && req.user?.company_name && lead.company_name !== req.user.company_name) {
+      res.status(403).json({ success: false, message: 'Unauthorized.' });
+      return;
+    }
+
+    const column = channel === 'whatsapp' ? 'whatsapp_optin' : 'email_optin';
+    const updated = await query(
+      `UPDATE campaign_master_leads SET ${column} = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
+      [Boolean(status), lead_id]
+    );
+
+    res.json({ success: true, lead: updated.rows[0] });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// 2. Upload CSV / Excel or Ingest JSON Contacts
+// 7. Delete Single Contact (Company Scoped & Superadmin)
+router.delete('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const existing = await query(`SELECT id, company_name FROM campaign_master_leads WHERE id = $1`, [id]);
+    if (existing.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Contact not found.' });
+      return;
+    }
+
+    if (req.user?.role !== 'superadmin' && req.user?.company_name && existing.rows[0].company_name !== req.user.company_name) {
+      res.status(403).json({ success: false, message: 'Unauthorized: You can only delete contacts belonging to your company.' });
+      return;
+    }
+
+    await query(`DELETE FROM campaign_master_leads WHERE id = $1`, [id]);
+    res.json({ success: true, message: 'Contact removed successfully.' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 8. Batch Delete Contacts (Company Scoped & Superadmin)
+const handleBatchDelete = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { lead_ids } = req.body;
+  if (!Array.isArray(lead_ids) || lead_ids.length === 0) {
+    res.status(400).json({ success: false, message: 'No contact IDs provided for batch deletion.' });
+    return;
+  }
+
+  try {
+    let deleteQuery = `DELETE FROM campaign_master_leads WHERE id = ANY($1::uuid[])`;
+    const params: any[] = [lead_ids];
+
+    if (req.user?.role !== 'superadmin') {
+      deleteQuery += ` AND company_name = $2`;
+      params.push(req.user?.company_name || 'Independent Enterprise');
+    }
+
+    const delRes = await query(deleteQuery, params);
+
+    await logAdminAudit(
+      req.user!.id,
+      'BATCH_DELETE_CONTACTS',
+      'campaign_master_leads',
+      undefined,
+      { count: delRes.rowCount },
+      req.ip
+    );
+
+    res.json({ success: true, message: `Successfully deleted ${delRes.rowCount || lead_ids.length} contacts.` });
+  } catch (err: any) {
+    console.error('Batch delete error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.delete('/batch-delete', authenticateToken, handleBatchDelete);
+router.post('/batch-delete', authenticateToken, handleBatchDelete);
+
+// 9. Upload CSV / Excel or Ingest JSON Contacts
 router.post('/upload', authenticateToken, upload.single('file'), async (req: AuthenticatedRequest, res): Promise<void> => {
   try {
     let rawContacts: RawContactInput[] = [];
@@ -246,7 +652,6 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
             }
           }
         } catch (e) {
-          // Fall back to sheetjs if line parsing encounters edge cases
           rawContacts = [];
         }
       }
@@ -299,7 +704,6 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
     };
     activeIngestJobs.set(jobId, job);
 
-    // Return immediate HTTP 202 response to prevent any cloud proxy timeout
     res.status(202).json({
       success: true,
       jobId,
@@ -308,7 +712,6 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
       message: `Received ${rawContacts.length.toLocaleString()} contacts. Ingestion started in background.`,
     });
 
-    // Run ingestion in background asynchronously with real-time WebSocket progress updates
     setImmediate(async () => {
       try {
         const ingestionReport = await ingestContactsBatch(
@@ -384,7 +787,7 @@ router.post('/upload', authenticateToken, upload.single('file'), async (req: Aut
   }
 });
 
-// Endpoint to poll job status
+// 10. Endpoint to poll job status
 router.get('/upload-status/:jobId', authenticateToken, (req: AuthenticatedRequest, res): void => {
   const jobId = String(req.params.jobId);
   const job = activeIngestJobs.get(jobId);
@@ -395,109 +798,7 @@ router.get('/upload-status/:jobId', authenticateToken, (req: AuthenticatedReques
   res.json({ success: true, job });
 });
 
-// 3. Batch Delete Contacts (Superadmin Only)
-router.delete('/batch-delete', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
-  const { lead_ids } = req.body;
-  if (!Array.isArray(lead_ids) || lead_ids.length === 0) {
-    res.status(400).json({ success: false, message: 'No contact IDs provided for batch deletion.' });
-    return;
-  }
-
-  try {
-    await query(
-      `DELETE FROM campaign_master_leads WHERE id = ANY($1::uuid[])`,
-      [lead_ids]
-    );
-
-    await logAdminAudit(
-      req.user!.id,
-      'BATCH_DELETE_CONTACTS',
-      'campaign_master_leads',
-      undefined,
-      { count: lead_ids.length },
-      req.ip
-    );
-
-    res.json({ success: true, message: `Successfully deleted ${lead_ids.length} contacts.` });
-  } catch (err: any) {
-    console.error('Batch delete error:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-router.post('/batch-delete', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
-  const { lead_ids } = req.body;
-  if (!Array.isArray(lead_ids) || lead_ids.length === 0) {
-    res.status(400).json({ success: false, message: 'No contact IDs provided for batch deletion.' });
-    return;
-  }
-
-  try {
-    await query(
-      `DELETE FROM campaign_master_leads WHERE id = ANY($1::uuid[])`,
-      [lead_ids]
-    );
-
-    await logAdminAudit(
-      req.user!.id,
-      'BATCH_DELETE_CONTACTS',
-      'campaign_master_leads',
-      undefined,
-      { count: lead_ids.length },
-      req.ip
-    );
-
-    res.json({ success: true, message: `Successfully deleted ${lead_ids.length} contacts.` });
-  } catch (err: any) {
-    console.error('Batch delete error:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// 4. Update Single Contact Preferences / Details
-router.put('/:id', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
-  const { id } = req.params;
-  const { whatsapp_optin, email_optin, full_name, metadata_json } = req.body;
-
-  try {
-    const compCond = getCompanyCondition(req, 5);
-    const extraWhere = compCond.clause ? `AND ${compCond.clause}` : '';
-
-    const updateRes = await query(
-      `UPDATE campaign_master_leads 
-       SET whatsapp_optin = COALESCE($1, whatsapp_optin),
-           email_optin = COALESCE($2, email_optin),
-           full_name = COALESCE($3, full_name),
-           metadata_json = COALESCE($4, metadata_json),
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $5 ${extraWhere}
-       RETURNING *`,
-      [whatsapp_optin, email_optin, full_name, metadata_json ? JSON.stringify(metadata_json) : null, String(id), ...compCond.params]
-    );
-
-    if (updateRes.rows.length === 0) {
-      res.status(404).json({ success: false, message: 'Contact not found.' });
-      return;
-    }
-
-    res.json({ success: true, lead: updateRes.rows[0] });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// 5. Delete Contact (Superadmin Only)
-router.delete('/:id', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
-  const { id } = req.params;
-  try {
-    await query(`DELETE FROM campaign_master_leads WHERE id = $1`, [String(id)]);
-    res.json({ success: true, message: 'Contact removed successfully.' });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// 6. Download Sample CSV Template
+// 11. Download Sample CSV Template
 router.get('/sample-template', (req, res) => {
   const csvContent = 'Full Name,Phone,Email,Address,City,PAN\nRahul Sharma,9876543210,rahul@example.com,Andheri West,Mumbai,ABCPS1234F\nPriya Patel,9812345678,priya@example.com,Koramangala,Bengaluru,XYZPP5678K\n';
   res.setHeader('Content-Type', 'text/csv');
