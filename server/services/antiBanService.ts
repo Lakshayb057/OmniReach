@@ -265,7 +265,7 @@ export async function checkAndIncrementDailyCount(
       const res = await query(
         `SELECT COUNT(*) as count 
          FROM campaign_logs cl
-         JOIN broadcasts b ON cl.broadcast_id = b.id
+         JOIN campaign_broadcasts b ON cl.broadcast_id = b.id
          WHERE b.whatsapp_gateway_id = $1 
            AND cl.status = 'delivered'
            AND cl.created_at >= CURRENT_DATE`,

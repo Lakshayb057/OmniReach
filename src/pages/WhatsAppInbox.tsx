@@ -148,7 +148,7 @@ export const WhatsAppInbox: React.FC = () => {
 
   const fetchCompanies = async () => {
     try {
-      const res = await axios.get('/api/leads/companies');
+      const res = await axios.get('/api/auth/companies');
       if (res.data.success) {
         setCompaniesList(res.data.companies || []);
       }

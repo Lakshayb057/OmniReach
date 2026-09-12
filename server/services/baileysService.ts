@@ -841,6 +841,8 @@ export async function sendBaileysMessage(
     console.warn('Failed to load gateway anti-ban settings:', err.message);
   }
 
+  let targetJid = jid;
+
   // 1. PRE-FLIGHT CHECK: Verify number exists on WhatsApp before dispatch
   if (antiBanConfig.preflight_number_check) {
     const checkResult = await validateNumberOnWhatsApp(session.socket, cleanPhone);
@@ -851,6 +853,9 @@ export async function sendBaileysMessage(
         error: `Number +${cleanPhone} is not registered on WhatsApp. Suppressed to protect sender reputation.`,
         status: 'suppressed',
       };
+    }
+    if (checkResult.jid) {
+      targetJid = checkResult.jid;
     }
   }
 
@@ -885,161 +890,80 @@ export async function sendBaileysMessage(
 
     // 5. HUMAN PRESENCE & TYPING SIMULATION: (available -> composing -> delay -> paused)
     if (antiBanConfig.simulate_human_typing) {
-      await simulateHumanPresence(session.socket, jid, fullText.length);
+      await simulateHumanPresence(session.socket, targetJid, fullText.length);
     }
 
-    // 6. RESOLVE MEDIA (Image / Document) IF PRESENT
+    // 6. RESOLVE BUTTONS & CALL-TO-ACTION LINKS (WhatsApp Multi-Device Protocol)
+    let dispatchText = fullText;
+    const hasButtons = Array.isArray(messageData.buttons_json) && messageData.buttons_json.length > 0;
+
+    if (hasButtons) {
+      const buttonLines: string[] = [];
+      for (const btn of messageData.buttons_json!) {
+        if (!btn || !btn.text) continue;
+        const btnText = btn.text.trim();
+        if (btn.type === 'URL' && btn.url) {
+          buttonLines.push(`🔘 *${btnText}*\n👉 ${btn.url.trim()}`);
+        } else if (btn.type === 'PHONE_NUMBER' && btn.phone_number) {
+          buttonLines.push(`📞 *${btnText}*: tel:${btn.phone_number.trim()}`);
+        } else if (btn.type === 'QUICK_REPLY') {
+          buttonLines.push(`💬 *Reply*: "${btnText}"`);
+        } else if (btn.url) {
+          buttonLines.push(`🔘 *${btnText}*\n👉 ${btn.url.trim()}`);
+        } else if (btn.phone_number) {
+          buttonLines.push(`📞 *${btnText}*: tel:${btn.phone_number.trim()}`);
+        } else {
+          buttonLines.push(`🔘 *${btnText}*`);
+        }
+      }
+      if (buttonLines.length > 0) {
+        dispatchText = `${dispatchText}\n\n───────────────────\n${buttonLines.join('\n\n')}`;
+      }
+    }
+
+    // 7. RESOLVE MEDIA (Image / Document) IF PRESENT
     const rawMediaUrl =
       messageData.media_url ||
       (isImageHeader || isDocHeader ? messageData.header_content : undefined);
 
     let result: proto.WebMessageInfo | undefined;
-    const hasButtons = Array.isArray(messageData.buttons_json) && messageData.buttons_json.length > 0;
-    const nativeButtons = hasButtons ? buildNativeFlowButtons(messageData.buttons_json!) : [];
 
-    // ATTEMPT 1: Native Interactive Flow Buttons (Real Clickable Buttons in WhatsApp)
-    if (nativeButtons.length > 0) {
-      try {
-        let headerObj: proto.Message.InteractiveMessage.IHeader | undefined;
-
-        if (rawMediaUrl) {
-          const resolvedMedia = await resolveMediaBuffer(rawMediaUrl);
-          if (resolvedMedia) {
-            if (resolvedMedia.isImage || isImageHeader) {
-              const mediaMsg = await prepareWAMessageMedia(
-                { image: resolvedMedia.buffer, mimetype: resolvedMedia.mimetype },
-                { upload: session.socket.waUploadToServer }
-              );
-              headerObj = proto.Message.InteractiveMessage.Header.create({
-                hasMediaAttachment: true,
-                imageMessage: mediaMsg.imageMessage || undefined,
-              });
-            } else if (resolvedMedia.isDocument || isDocHeader) {
-              const mediaMsg = await prepareWAMessageMedia(
-                {
-                  document: resolvedMedia.buffer,
-                  mimetype: resolvedMedia.mimetype,
-                  fileName: resolvedMedia.fileName || 'Attachment.pdf',
-                },
-                { upload: session.socket.waUploadToServer }
-              );
-              headerObj = proto.Message.InteractiveMessage.Header.create({
-                hasMediaAttachment: true,
-                documentMessage: mediaMsg.documentMessage || undefined,
-              });
-            }
-          }
-        } else if (messageData.header_content && !isImageHeader && !isDocHeader) {
-          headerObj = proto.Message.InteractiveMessage.Header.create({
-            title: messageData.header_content.trim(),
-            hasMediaAttachment: false,
+    if (rawMediaUrl) {
+      const resolvedMedia = await resolveMediaBuffer(rawMediaUrl);
+      if (resolvedMedia) {
+        if (resolvedMedia.isImage || isImageHeader) {
+          result = await session.socket.sendMessage(targetJid, {
+            image: resolvedMedia.buffer,
+            caption: dispatchText,
+            mimetype: resolvedMedia.mimetype,
+          });
+        } else if (resolvedMedia.isDocument || isDocHeader) {
+          result = await session.socket.sendMessage(targetJid, {
+            document: resolvedMedia.buffer,
+            caption: dispatchText,
+            mimetype: resolvedMedia.mimetype,
+            fileName: resolvedMedia.fileName || 'Attachment.pdf',
           });
         }
-
-        const interactiveMessage = proto.Message.InteractiveMessage.create({
-          header: headerObj,
-          body: proto.Message.InteractiveMessage.Body.create({
-            text: fullText,
-          }),
-          footer: messageData.footer_content
-            ? proto.Message.InteractiveMessage.Footer.create({
-                text: messageData.footer_content.trim(),
-              })
-            : undefined,
-          nativeFlowMessage: proto.Message.InteractiveMessage.NativeFlowMessage.create({
-            buttons: nativeButtons,
-          }),
-        });
-
-        const fullMsg = {
-          viewOnceMessage: {
-            message: {
-              messageContextInfo: {
-                deviceListMetadata: {},
-                deviceListMetadataVersion: 2,
-              },
-              interactiveMessage,
-            },
-          },
-        };
-
-        const generated = generateWAMessageFromContent(jid, fullMsg, {
-          userJid: session.socket.user?.id,
-        });
-
-        await session.socket.relayMessage(jid, generated.message!, {
-          messageId: generated.key.id!,
-        });
-
-        result = generated;
-        console.log(`[Baileys Dispatch] Sent native interactive button message (${generated.key.id}) to ${recipientPhone}`);
-      } catch (nativeErr: any) {
-        console.warn(`[Baileys Dispatch] Native interactive button attempt failed (${nativeErr.message}), falling back to standard message with text links.`);
-      }
-    }
-
-    // ATTEMPT 2: Fallback to standard message (with formatted text links if native buttons failed or weren't requested)
-    if (!result) {
-      let dispatchText = fullText;
-
-      if (hasButtons) {
-        const buttonLines: string[] = [];
-        for (const btn of messageData.buttons_json!) {
-          if (!btn || !btn.text) continue;
-          const btnText = btn.text.trim();
-          if (btn.type === 'URL' && btn.url) {
-            buttonLines.push(`🔘 *${btnText}*: ${btn.url.trim()}`);
-          } else if (btn.type === 'PHONE_NUMBER' && btn.phone_number) {
-            buttonLines.push(`📞 *${btnText}*: ${btn.phone_number.trim()}`);
-          } else if (btn.type === 'QUICK_REPLY') {
-            buttonLines.push(`💬 *Reply*: "${btnText}"`);
-          } else if (btn.url) {
-            buttonLines.push(`🔘 *${btnText}*: ${btn.url.trim()}`);
-          } else {
-            buttonLines.push(`🔘 *${btnText}*`);
-          }
+      } else {
+        console.warn(`[Baileys Dispatch] Could not download media buffer from "${rawMediaUrl}", falling back to text dispatch`);
+        if (isImageHeader && messageData.header_content && !dispatchText.includes(messageData.header_content)) {
+          dispatchText = `🖼️ *Media*: ${messageData.header_content}\n\n${dispatchText}`;
         }
-        if (buttonLines.length > 0) {
-          dispatchText = `${dispatchText}\n\n──────────────\n${buttonLines.join('\n')}`;
-        }
-      }
-
-      if (rawMediaUrl) {
-        const resolvedMedia = await resolveMediaBuffer(rawMediaUrl);
-        if (resolvedMedia) {
-          if (resolvedMedia.isImage || isImageHeader) {
-            result = await session.socket.sendMessage(jid, {
-              image: resolvedMedia.buffer,
-              caption: dispatchText,
-              mimetype: resolvedMedia.mimetype,
-            });
-          } else if (resolvedMedia.isDocument || isDocHeader) {
-            result = await session.socket.sendMessage(jid, {
-              document: resolvedMedia.buffer,
-              caption: dispatchText,
-              mimetype: resolvedMedia.mimetype,
-              fileName: resolvedMedia.fileName || 'Attachment.pdf',
-            });
-          }
-        } else {
-          console.warn(`[Baileys Dispatch] Could not download media buffer from "${rawMediaUrl}", falling back to text dispatch`);
-          if (isImageHeader && messageData.header_content && !dispatchText.includes(messageData.header_content)) {
-            dispatchText = `🖼️ *Media*: ${messageData.header_content}\n\n${dispatchText}`;
-          }
-          result = await session.socket.sendMessage(jid, {
-            text: dispatchText,
-          });
-        }
-      }
-
-      if (!result) {
-        result = await session.socket.sendMessage(jid, {
+        result = await session.socket.sendMessage(targetJid, {
           text: dispatchText,
         });
       }
     }
 
+    if (!result) {
+      result = await session.socket.sendMessage(targetJid, {
+        text: dispatchText,
+      });
+    }
+
     const messageId = result?.key?.id || `baileys_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    console.log(`[Baileys Dispatch] ✅ Standard WhatsApp message delivered (${messageId}) to ${cleanPhone}`);
 
     return {
       success: true,
