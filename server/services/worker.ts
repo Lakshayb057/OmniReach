@@ -92,28 +92,93 @@ export async function processBroadcast(broadcast: any) {
 
   try {
     // 1. Fetch Target Contacts for this broadcast
-    let leadsRes = await query(
-      `SELECT id, urn, fmcb_id, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
-       FROM campaign_master_leads
-       WHERE last_broadcast_id = $1
-       ORDER BY created_at ASC`,
-      [broadcast.id]
-    );
+    let leadsRes;
+    const filters = broadcast.audience_filters && typeof broadcast.audience_filters === 'object'
+      ? broadcast.audience_filters
+      : (typeof broadcast.audience_filters === 'string' ? JSON.parse(broadcast.audience_filters || '{}') : {});
 
-    // If no specific leads linked to this broadcast id, target all master leads in company
-    if (leadsRes.rows.length === 0) {
-      const compCondition = broadcast.company_name && broadcast.company_name !== 'OmniReach Global'
-        ? `WHERE (company_name = $1 OR company_name = 'OmniReach Global')`
-        : '';
-      const params = compCondition ? [broadcast.company_name] : [];
+    if (filters && filters.source === 'master_repo') {
+      const conditions: string[] = [];
+      const params: any[] = [];
+
+      // Company isolation: Company only sends to their own leads
+      if (broadcast.company_name && broadcast.company_name !== 'OmniReach Global') {
+        params.push(broadcast.company_name);
+        conditions.push(`company_name = $${params.length}`);
+      }
+
+      // Sr. No Range Filter: sr_no_start to sr_no_end
+      if (filters.sr_no_start !== undefined && filters.sr_no_start !== null && filters.sr_no_start !== '') {
+        params.push(Number(filters.sr_no_start));
+        conditions.push(`sr_no >= $${params.length}`);
+      }
+      if (filters.sr_no_end !== undefined && filters.sr_no_end !== null && filters.sr_no_end !== '') {
+        params.push(Number(filters.sr_no_end));
+        conditions.push(`sr_no <= $${params.length}`);
+      }
+
+      // Channel requirement filter
+      if (filters.channel_filter === 'phone_only') {
+        conditions.push(`phone IS NOT NULL AND phone != ''`);
+      } else if (filters.channel_filter === 'email_only') {
+        conditions.push(`email IS NOT NULL AND email != ''`);
+      } else if (filters.channel_filter === 'both') {
+        conditions.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
+      }
+
+      // Opt-in filter
+      if (filters.optin_filter === 'whatsapp_optin') {
+        conditions.push(`whatsapp_optin = true`);
+      } else if (filters.optin_filter === 'email_optin') {
+        conditions.push(`email_optin = true`);
+      }
+
+      // Search keyword filter
+      if (filters.search && typeof filters.search === 'string' && filters.search.trim().length > 0) {
+        params.push(`%${filters.search.trim().toLowerCase()}%`);
+        const pIdx = params.length;
+        conditions.push(`(LOWER(full_name) LIKE $${pIdx} OR LOWER(email) LIKE $${pIdx} OR phone LIKE $${pIdx} OR urn LIKE $${pIdx} OR fmcb_id LIKE $${pIdx})`);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       leadsRes = await query(
-        `SELECT id, urn, fmcb_id, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
+        `SELECT id, urn, fmcb_id, sr_no, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
          FROM campaign_master_leads
-         ${compCondition}
-         ORDER BY created_at ASC`,
+         ${whereClause}
+         ORDER BY sr_no ASC`,
         params
       );
+    } else {
+      // Direct upload for this broadcast
+      leadsRes = await query(
+        `SELECT id, urn, fmcb_id, sr_no, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
+         FROM campaign_master_leads
+         WHERE last_broadcast_id = $1
+         ORDER BY sr_no ASC`,
+        [broadcast.id]
+      );
+
+      // Fallback if no specific leads linked to this broadcast id, target master leads in company
+      if (leadsRes.rows.length === 0) {
+        const compCondition = broadcast.company_name && broadcast.company_name !== 'OmniReach Global'
+          ? `WHERE company_name = $1`
+          : '';
+        const params = compCondition ? [broadcast.company_name] : [];
+        leadsRes = await query(
+          `SELECT id, urn, fmcb_id, sr_no, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
+           FROM campaign_master_leads
+           ${compCondition}
+           ORDER BY sr_no ASC`,
+          params
+        );
+      }
     }
+
+    // Sync total target count in database
+    await query(
+      `UPDATE campaign_broadcasts SET total_target_count = $1 WHERE id = $2`,
+      [leadsRes.rows.length, broadcast.id]
+    );
 
     const leads: LeadContext[] = leadsRes.rows;
     let whatsappSent = 0;

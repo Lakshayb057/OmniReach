@@ -18,7 +18,7 @@ function getCompanyCondition(req: AuthenticatedRequest, startingIndex: number): 
     return { clause: '', params: [] };
   }
   const compName = req.user?.company_name || 'Independent Enterprise';
-  return { clause: `(company_name = $${startingIndex} OR company_name = 'OmniReach Global')`, params: [compName] };
+  return { clause: `company_name = $${startingIndex}`, params: [compName] };
 }
 
 // 1. List all Gateways (Company Isolated)

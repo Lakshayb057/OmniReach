@@ -71,7 +71,28 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res) => {
       );
     }
 
-    if (optin_filter === 'whatsapp_optout') {
+    if (req.query.sr_no_start) {
+      params.push(parseInt(req.query.sr_no_start as string, 10));
+      whereClauses.push(`sr_no >= $${params.length}`);
+    }
+    if (req.query.sr_no_end) {
+      params.push(parseInt(req.query.sr_no_end as string, 10));
+      whereClauses.push(`sr_no <= $${params.length}`);
+    }
+
+    if (req.query.channel_filter === 'phone_only') {
+      whereClauses.push(`phone IS NOT NULL AND phone != ''`);
+    } else if (req.query.channel_filter === 'email_only') {
+      whereClauses.push(`email IS NOT NULL AND email != ''`);
+    } else if (req.query.channel_filter === 'both') {
+      whereClauses.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
+    }
+
+    if (optin_filter === 'whatsapp_optin') {
+      whereClauses.push('whatsapp_optin = true');
+    } else if (optin_filter === 'email_optin') {
+      whereClauses.push('email_optin = true');
+    } else if (optin_filter === 'whatsapp_optout') {
       whereClauses.push('whatsapp_optin = false');
     } else if (optin_filter === 'email_optout') {
       whereClauses.push('email_optin = false');
@@ -91,7 +112,7 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res) => {
     const dataRes = await query(
       `SELECT * FROM campaign_master_leads 
        ${whereSql} 
-       ORDER BY created_at DESC 
+       ORDER BY sr_no ASC 
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
       params
     );
@@ -105,6 +126,70 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res) => {
         limit: parseInt(limit as string, 10),
         totalPages: Math.ceil(total / parseInt(limit as string, 10)),
       },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// Fast audience count and Sr. No boundaries lookup for Campaign Wizard
+router.get('/count', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  try {
+    const { sr_no_start, sr_no_end, optin_filter, channel_filter, search } = req.query;
+    const params: any[] = [];
+    const whereClauses: string[] = [];
+
+    const compCond = getCompanyCondition(req, params.length + 1);
+    if (compCond.clause) {
+      whereClauses.push(compCond.clause);
+      params.push(...compCond.params);
+    }
+
+    if (sr_no_start) {
+      params.push(parseInt(sr_no_start as string, 10));
+      whereClauses.push(`sr_no >= $${params.length}`);
+    }
+    if (sr_no_end) {
+      params.push(parseInt(sr_no_end as string, 10));
+      whereClauses.push(`sr_no <= $${params.length}`);
+    }
+    if (channel_filter === 'phone_only') {
+      whereClauses.push(`phone IS NOT NULL AND phone != ''`);
+    } else if (channel_filter === 'email_only') {
+      whereClauses.push(`email IS NOT NULL AND email != ''`);
+    } else if (channel_filter === 'both') {
+      whereClauses.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
+    }
+
+    if (optin_filter === 'whatsapp_optin') {
+      whereClauses.push('whatsapp_optin = true');
+    } else if (optin_filter === 'email_optin') {
+      whereClauses.push('email_optin = true');
+    } else if (optin_filter === 'whatsapp_optout') {
+      whereClauses.push('whatsapp_optin = false');
+    } else if (optin_filter === 'email_optout') {
+      whereClauses.push('email_optin = false');
+    }
+
+    if (search && String(search).trim().length > 0) {
+      params.push(`%${String(search).trim()}%`);
+      whereClauses.push(
+        `(full_name ILIKE $${params.length} OR phone ILIKE $${params.length} OR email ILIKE $${params.length} OR urn ILIKE $${params.length} OR fmcb_id ILIKE $${params.length})`
+      );
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const r = await query(
+      `SELECT COUNT(*) as count, MIN(sr_no) as min_sr_no, MAX(sr_no) as max_sr_no 
+       FROM campaign_master_leads ${whereSql}`,
+      params
+    );
+
+    res.json({
+      success: true,
+      count: parseInt(r.rows[0].count, 10),
+      min_sr_no: r.rows[0].min_sr_no ? parseInt(r.rows[0].min_sr_no, 10) : 1,
+      max_sr_no: r.rows[0].max_sr_no ? parseInt(r.rows[0].max_sr_no, 10) : 1,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });

@@ -34,6 +34,9 @@ export const MasterDataCenter: React.FC = () => {
   // Persisted search & filter
   const [search, setSearch] = useState(() => localStorage.getItem('mdc_search') || '');
   const [optinFilter, setOptinFilter] = useState(() => localStorage.getItem('mdc_optin_filter') || 'all');
+  const [channelFilter, setChannelFilter] = useState<string>('all');
+  const [srNoStart, setSrNoStart] = useState<string>('');
+  const [srNoEnd, setSrNoEnd] = useState<string>('');
   
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -60,7 +63,15 @@ export const MasterDataCenter: React.FC = () => {
     if (isSuperadmin) {
       fetchCompanies();
     }
-  }, [page, limit, optinFilter, selectedCompanyFilter]);
+  }, [page, limit, optinFilter, channelFilter, selectedCompanyFilter]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setPage(1);
+      fetchLeads();
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [srNoStart, srNoEnd]);
 
   const fetchCompanies = async () => {
     try {
@@ -152,6 +163,9 @@ export const MasterDataCenter: React.FC = () => {
           limit,
           search,
           optin_filter: optinFilter !== 'all' ? optinFilter : undefined,
+          channel_filter: channelFilter !== 'all' ? channelFilter : undefined,
+          sr_no_start: srNoStart ? parseInt(srNoStart, 10) : undefined,
+          sr_no_end: srNoEnd ? parseInt(srNoEnd, 10) : undefined,
           company_name: selectedCompanyFilter !== 'all' ? selectedCompanyFilter : undefined,
         },
       });
@@ -369,8 +383,42 @@ export const MasterDataCenter: React.FC = () => {
 
           <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
             <Filter size={14} />
-            <span>Filter Opt-in:</span>
+            <span>Filter:</span>
           </div>
+
+          <div className="flex items-center gap-1">
+            <span className="text-slate-500 font-mono text-xs">#</span>
+            <input
+              type="number"
+              placeholder="From Sr."
+              value={srNoStart}
+              onChange={(e) => setSrNoStart(e.target.value)}
+              className="w-20 bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            />
+            <span className="text-slate-500 text-xs">-</span>
+            <input
+              type="number"
+              placeholder="To Sr."
+              value={srNoEnd}
+              onChange={(e) => setSrNoEnd(e.target.value)}
+              className="w-20 bg-[#070b14] border border-slate-800 rounded-xl px-2.5 py-2 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <select
+            value={channelFilter}
+            onChange={(e) => {
+              setChannelFilter(e.target.value);
+              setPage(1);
+            }}
+            className="bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+          >
+            <option value="all">All Channels</option>
+            <option value="phone_only">Phone Only</option>
+            <option value="email_only">Email Only</option>
+            <option value="both">Both Phone & Email</option>
+          </select>
+
           <select
             value={optinFilter}
             onChange={(e) => {
@@ -379,11 +427,27 @@ export const MasterDataCenter: React.FC = () => {
             }}
             className="bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
           >
-            <option value="all">All Contacts ({total})</option>
+            <option value="all">All Contacts ({total.toLocaleString()})</option>
             <option value="whatsapp_optout">WhatsApp Opted-Out</option>
             <option value="email_optout">Email Opted-Out</option>
             <option value="all_optout">Fully Unsubscribed</option>
           </select>
+
+          {(srNoStart || srNoEnd || channelFilter !== 'all' || optinFilter !== 'all') && (
+            <button
+              onClick={() => {
+                setSrNoStart('');
+                setSrNoEnd('');
+                setChannelFilter('all');
+                setOptinFilter('all');
+                setPage(1);
+              }}
+              className="p-2 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition-colors"
+              title="Reset Filters"
+            >
+              <X size={14} />
+            </button>
+          )}
 
           {isSuperadmin && selectedLeads.length > 0 && (
             <button
@@ -411,6 +475,7 @@ export const MasterDataCenter: React.FC = () => {
                     className="rounded bg-[#070b14] border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
                   />
                 </th>
+                <th className="p-3.5 w-16 text-center">Sr. No</th>
                 {isSuperadmin && <th className="p-3.5">Company</th>}
                 <th className="p-3.5">Customer Name & City</th>
                 <th className="p-3.5">URN / Sequential FMCB</th>
@@ -424,7 +489,7 @@ export const MasterDataCenter: React.FC = () => {
             <tbody className="divide-y divide-slate-800/80 text-slate-300">
               {leads.length === 0 ? (
                 <tr>
-                  <td colSpan={isSuperadmin ? 9 : 8} className="p-8 text-center text-slate-500">
+                  <td colSpan={isSuperadmin ? 10 : 9} className="p-8 text-center text-slate-500">
                     No contacts found matching your query.
                   </td>
                 </tr>
@@ -443,6 +508,9 @@ export const MasterDataCenter: React.FC = () => {
                         onChange={() => handleToggleSelect(lead.id)}
                         className="rounded bg-[#070b14] border-slate-700 text-blue-600 focus:ring-0 cursor-pointer"
                       />
+                    </td>
+                    <td className="p-3.5 text-center font-mono font-bold text-amber-400/90 text-xs">
+                      #{lead.sr_no || '—'}
                     </td>
                     {isSuperadmin && (
                       <td className="p-3.5">

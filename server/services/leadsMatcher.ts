@@ -148,7 +148,10 @@ export async function ingestContactsBatch(
         existingContact.phone = phone;
         phoneMap.set(phone, existingContact);
       }
-      if (email && !existingContact.email) {
+      if (email) {
+        if (existingContact.email && existingContact.email !== email) {
+          emailMap.delete(existingContact.email);
+        }
         existingContact.email = email;
         emailMap.set(email, existingContact);
       }

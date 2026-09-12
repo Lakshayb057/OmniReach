@@ -69,9 +69,12 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
     channel,
     tags,
     whatsapp_gateway_id,
+    whatsapp_phone_number_id,
     email_gateway_id,
     whatsapp_template_id,
     email_template_id,
+    audience_filters,
+    total_audience,
     execution_mode,
     scheduled_at,
     company_name,
@@ -93,8 +96,8 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
 
     const insertRes = await query(
       `INSERT INTO campaign_broadcasts 
-       (name, company_name, description, channel, tags, whatsapp_gateway_id, email_gateway_id, whatsapp_template_id, email_template_id, status, execution_mode, scheduled_at, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       (name, company_name, description, channel, tags, whatsapp_gateway_id, whatsapp_phone_number_id, email_gateway_id, whatsapp_template_id, email_template_id, audience_filters, total_target_count, status, execution_mode, scheduled_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING *`,
       [
         name,
@@ -103,9 +106,12 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
         channel,
         tags || [],
         whatsapp_gateway_id || null,
+        whatsapp_phone_number_id || null,
         email_gateway_id || null,
         whatsapp_template_id || null,
         email_template_id || null,
+        JSON.stringify(audience_filters || {}),
+        parseInt(total_audience, 10) || 0,
         initialStatus,
         execution_mode || 'immediate',
         scheduleTime,

@@ -19,6 +19,12 @@ import {
   AlertCircle,
   Eye,
   Shield,
+  Filter,
+  Search,
+  Hash,
+  Sliders,
+  CheckSquare,
+  RotateCcw,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { WhatsAppPreview } from '../Previews/WhatsAppPreview';
@@ -60,6 +66,17 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
   const [audienceOption, setAudienceOption] = useState<'upload' | 'master_repo'>('upload');
   const [totalAudienceCount, setTotalAudienceCount] = useState(0);
 
+  // Step 4: Sr. No Range and Granular Audience Filters for Master Contacts
+  const [srNoStart, setSrNoStart] = useState<string>('1');
+  const [srNoEnd, setSrNoEnd] = useState<string>('');
+  const [channelFilter, setChannelFilter] = useState<'all' | 'phone_only' | 'email_only' | 'both'>('all');
+  const [optinFilter, setOptinFilter] = useState<'all' | 'whatsapp_optin' | 'email_optin'>('all');
+  const [searchFilter, setSearchFilter] = useState<string>('');
+  const [filteredCount, setFilteredCount] = useState<number>(0);
+  const [minSrNo, setMinSrNo] = useState<number>(1);
+  const [maxSrNo, setMaxSrNo] = useState<number>(1);
+  const [isCounting, setIsCounting] = useState<boolean>(false);
+
   // Step 6: Schedule State
   const [executionMode, setExecutionMode] = useState<'immediate' | 'scheduled'>('immediate');
   const [scheduledAt, setScheduledAt] = useState('');
@@ -72,6 +89,15 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
       setScheduledAt(future.toISOString().slice(0, 16));
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen && audienceOption === 'master_repo') {
+      const timer = setTimeout(() => {
+        fetchMasterAudienceStats();
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [srNoStart, srNoEnd, channelFilter, optinFilter, searchFilter, audienceOption, isOpen]);
 
   const fetchGatewaysAndTemplates = async () => {
     try {
@@ -100,12 +126,64 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
 
   const fetchMasterCount = async () => {
     try {
-      const res = await axios.get('/api/leads?limit=1');
+      const res = await axios.get('/api/leads/count');
       if (res.data.success) {
-        setTotalAudienceCount(res.data.pagination.total);
+        setTotalAudienceCount(res.data.count);
+        setFilteredCount(res.data.count);
+        if (res.data.min_sr_no !== null && res.data.min_sr_no !== undefined) {
+          setMinSrNo(res.data.min_sr_no);
+        }
+        if (res.data.max_sr_no !== null && res.data.max_sr_no !== undefined) {
+          setMaxSrNo(res.data.max_sr_no);
+          if (!srNoEnd) setSrNoEnd(String(res.data.max_sr_no));
+        }
       }
     } catch (err) {
       console.error('Failed to count master leads:', err);
+    }
+  };
+
+  const fetchMasterAudienceStats = async (
+    startVal?: string,
+    endVal?: string,
+    chVal?: string,
+    optVal?: string,
+    searchVal?: string
+  ) => {
+    try {
+      setIsCounting(true);
+      const sStart = startVal !== undefined ? startVal : srNoStart;
+      const sEnd = endVal !== undefined ? endVal : srNoEnd;
+      const ch = chVal !== undefined ? chVal : channelFilter;
+      const opt = optVal !== undefined ? optVal : optinFilter;
+      const search = searchVal !== undefined ? searchVal : searchFilter;
+
+      const res = await axios.get('/api/leads/count', {
+        params: {
+          sr_no_start: sStart ? parseInt(sStart, 10) : undefined,
+          sr_no_end: sEnd ? parseInt(sEnd, 10) : undefined,
+          channel_filter: ch !== 'all' ? ch : undefined,
+          optin_filter: opt !== 'all' ? opt : undefined,
+          search: search.trim() || undefined,
+        },
+      });
+
+      if (res.data.success) {
+        setFilteredCount(res.data.count);
+        if (res.data.min_sr_no !== null && res.data.min_sr_no !== undefined) {
+          setMinSrNo(res.data.min_sr_no);
+        }
+        if (res.data.max_sr_no !== null && res.data.max_sr_no !== undefined) {
+          setMaxSrNo(res.data.max_sr_no);
+          if (!srNoEnd && (!endVal || endVal === '')) {
+            setSrNoEnd(String(res.data.max_sr_no));
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch filtered audience count:', err);
+    } finally {
+      setIsCounting(false);
     }
   };
 
@@ -157,6 +235,17 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
   const handleSubmitCampaign = async () => {
     setIsLoading(true);
     try {
+      const audienceFilters = audienceOption === 'master_repo' ? {
+        source: 'master_repo',
+        sr_no_start: srNoStart ? parseInt(srNoStart, 10) : minSrNo,
+        sr_no_end: srNoEnd ? parseInt(srNoEnd, 10) : maxSrNo,
+        channel_filter: channelFilter,
+        optin_filter: optinFilter,
+        search: searchFilter.trim() || undefined,
+      } : {
+        source: 'upload',
+      };
+
       const payload = {
         name,
         description,
@@ -167,6 +256,8 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
         email_gateway_id: channel === 'whatsapp' ? null : selectedEmailGateway,
         whatsapp_template_id: channel === 'email' ? null : selectedWhatsAppTemplate,
         email_template_id: channel === 'whatsapp' ? null : selectedEmailTemplate,
+        audience_filters: audienceFilters,
+        total_audience: audienceOption === 'master_repo' ? filteredCount : (ingestionReport?.totalProcessed || 0),
         execution_mode: executionMode,
         scheduled_at: executionMode === 'scheduled' ? scheduledAt : new Date().toISOString(),
       };
@@ -627,7 +718,10 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
                 </div>
 
                 <div
-                  onClick={() => setAudienceOption('master_repo')}
+                  onClick={() => {
+                    setAudienceOption('master_repo');
+                    fetchMasterAudienceStats();
+                  }}
                   className={`p-4 rounded-xl border cursor-pointer ${
                     audienceOption === 'master_repo'
                       ? 'bg-blue-600/15 border-blue-500 text-blue-400 ring-2 ring-blue-500/20 shadow-md'
@@ -637,10 +731,203 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
                   <Layers size={20} className="mb-2 text-current" />
                   <div className="text-xs font-bold text-slate-200">Existing Master Contacts</div>
                   <div className="text-[10px] text-slate-500 mt-0.5">
-                    {totalAudienceCount} active contacts ready
+                    {totalAudienceCount.toLocaleString()} active contacts ready
                   </div>
                 </div>
               </div>
+
+              {audienceOption === 'master_repo' && (
+                <div className="space-y-4 bg-[#0c1222] border border-blue-500/25 rounded-2xl p-5 shadow-lg shadow-blue-950/20 animate-fadeIn">
+                  {/* Header Banner */}
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20 flex items-center justify-center font-bold">
+                        <Hash size={16} />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-white flex items-center gap-2">
+                          <span>Master Data Center Audience Slice</span>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                            {totalAudienceCount.toLocaleString()} Total Contacts Live
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400">
+                          Sequential Sr. No range: #{minSrNo} to #{maxSrNo} (Permanent & Non-Changeable)
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSrNoStart(String(minSrNo));
+                        setSrNoEnd(String(maxSrNo));
+                        setChannelFilter('all');
+                        setOptinFilter('all');
+                        setSearchFilter('');
+                      }}
+                      className="px-2.5 py-1 text-[11px] text-slate-400 hover:text-blue-400 bg-[#070b14] hover:bg-slate-800 border border-slate-800 rounded-lg flex items-center gap-1 transition-colors"
+                    >
+                      <RotateCcw size={12} />
+                      <span>Reset Filters</span>
+                    </button>
+                  </div>
+
+                  {/* Sr. No Range Inputs */}
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <Sliders size={14} className="text-blue-400" />
+                      <span>Choose Serial Number (Sr. No) Range for this Broadcast:</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1 flex items-center justify-between">
+                          <span>From Sr. No:</span>
+                          <span className="text-[10px] text-slate-500 font-mono">Min: #{minSrNo}</span>
+                        </div>
+                        <div className="relative">
+                          <span className="absolute left-3 top-2.5 text-xs text-slate-500 font-mono font-bold">#</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max={maxSrNo}
+                            value={srNoStart}
+                            onChange={(e) => setSrNoStart(e.target.value)}
+                            placeholder="1"
+                            className="w-full bg-[#070b14] border border-slate-800 rounded-xl pl-8 pr-3.5 py-2.5 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-[11px] text-slate-400 mb-1 flex items-center justify-between">
+                          <span>To Sr. No:</span>
+                          <span className="text-[10px] text-slate-500 font-mono">Max: #{maxSrNo}</span>
+                        </div>
+                        <div className="relative">
+                          <span className="absolute left-3 top-2.5 text-xs text-slate-500 font-mono font-bold">#</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max={maxSrNo}
+                            value={srNoEnd}
+                            onChange={(e) => setSrNoEnd(e.target.value)}
+                            placeholder={String(maxSrNo)}
+                            className="w-full bg-[#070b14] border border-slate-800 rounded-xl pl-8 pr-3.5 py-2.5 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quick Presets */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-slate-500 font-semibold mr-1">Presets:</span>
+                      {[
+                        { label: 'First 1,000', start: '1', end: '1000' },
+                        { label: 'First 5,000', start: '1', end: '5000' },
+                        { label: 'First 10,000', start: '1', end: '10000' },
+                        { label: 'First 50,000', start: '1', end: '50000' },
+                        { label: `All Contacts (${maxSrNo.toLocaleString()})`, start: '1', end: String(maxSrNo) },
+                      ].map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            setSrNoStart(preset.start);
+                            setSrNoEnd(preset.end);
+                          }}
+                          className={`px-2.5 py-1 text-[11px] rounded-lg font-medium border transition-colors ${
+                            srNoStart === preset.start && srNoEnd === preset.end
+                              ? 'bg-blue-600/25 text-blue-300 border-blue-500 font-bold'
+                              : 'bg-[#070b14] text-slate-400 border-slate-800 hover:border-slate-700 hover:text-slate-200'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Filters Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-3 border-t border-slate-800">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Channel Requirement
+                      </label>
+                      <select
+                        value={channelFilter}
+                        onChange={(e) => setChannelFilter(e.target.value as any)}
+                        className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                      >
+                        <option value="all">All Contacts (Phone / Email)</option>
+                        <option value="phone_only">With Phone Number Only</option>
+                        <option value="email_only">With Email Address Only</option>
+                        <option value="both">With Both Phone & Email</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Compliance Opt-In Status
+                      </label>
+                      <select
+                        value={optinFilter}
+                        onChange={(e) => setOptinFilter(e.target.value as any)}
+                        className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+                      >
+                        <option value="all">All Opted-In Active Leads</option>
+                        <option value="whatsapp_optin">WhatsApp Opted-In Only</option>
+                        <option value="email_optin">Email Opted-In Only</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                        Filter Specific Contact / Email
+                      </label>
+                      <div className="relative">
+                        <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
+                        <input
+                          type="text"
+                          placeholder="Search phone, email, name..."
+                          value={searchFilter}
+                          onChange={(e) => setSearchFilter(e.target.value)}
+                          className="w-full bg-[#070b14] border border-slate-800 rounded-xl pl-8 pr-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Live Count Pill */}
+                  <div className="p-3.5 bg-gradient-to-r from-blue-950/50 via-indigo-950/40 to-blue-950/50 border border-blue-500/30 rounded-xl flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                          <CheckSquare size={14} className="text-emerald-400" />
+                          <span>Audience Slice Selected:</span>
+                        </span>
+                        {isCounting ? (
+                          <span className="text-xs font-mono font-bold text-blue-400 animate-pulse">
+                            Counting contacts...
+                          </span>
+                        ) : (
+                          <span className="text-sm font-mono font-extrabold text-emerald-400">
+                            {filteredCount.toLocaleString()} Contacts
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-400">
+                        Slice: Sr. No <span className="font-mono text-amber-300 font-bold">#{srNoStart || 1}</span> to{' '}
+                        <span className="font-mono text-amber-300 font-bold">#{srNoEnd || maxSrNo}</span> • Zero Duplicates Enforced
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                        ✓ Ready for Dispatch
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {audienceOption === 'upload' && (
                 <div className="border-2 border-dashed border-slate-700 hover:border-blue-500 bg-[#070b14] rounded-2xl p-6 text-center transition-colors">
@@ -800,9 +1087,13 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
 
               <div className="p-4 bg-[#070b14] rounded-xl border border-slate-800 text-left space-y-1.5 text-xs">
                 <div className="font-bold text-white">Campaign Summary:</div>
-                <div className="text-slate-400 flex justify-between">
+                <div className="text-slate-400 flex justify-between items-center">
                   <span>Target Audience:</span>
-                  <span className="text-slate-200 font-bold">{totalAudienceCount} Contacts</span>
+                  <span className="text-slate-200 font-bold font-mono">
+                    {audienceOption === 'master_repo'
+                      ? `${filteredCount.toLocaleString()} Contacts (Sr. No #${srNoStart || minSrNo} - #${srNoEnd || maxSrNo})`
+                      : `${ingestionReport?.totalProcessed || totalAudienceCount} Contacts (Uploaded File)`}
+                  </span>
                 </div>
                 <div className="text-slate-400 flex justify-between">
                   <span>Channel:</span>

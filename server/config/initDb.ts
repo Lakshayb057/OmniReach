@@ -45,6 +45,21 @@ export async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_master_leads_co_optin ON campaign_master_leads(company_name, whatsapp_optin, email_optin);
       CREATE INDEX IF NOT EXISTS idx_campaign_logs_broadcast_status ON campaign_logs(broadcast_id, status);
 
+      -- Unchangeable Sr. No for Master Data Center
+      ALTER TABLE campaign_master_leads ADD COLUMN IF NOT EXISTS sr_no BIGSERIAL;
+      CREATE INDEX IF NOT EXISTS idx_master_leads_sr_no ON campaign_master_leads(sr_no);
+      CREATE INDEX IF NOT EXISTS idx_master_leads_comp_sr_no ON campaign_master_leads(company_name, sr_no);
+
+      -- Audience Filters (Sr. No Range, Optin, Channel) for Broadcast Campaigns
+      ALTER TABLE campaign_broadcasts ADD COLUMN IF NOT EXISTS audience_filters JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE campaign_broadcasts ADD COLUMN IF NOT EXISTS whatsapp_phone_number_id VARCHAR(100);
+
+      -- Purge legacy mock templates
+      DELETE FROM campaign_templates 
+      WHERE meta_template_name LIKE 'finmantra_%' OR name LIKE 'finmantra_%' 
+         OR meta_template_name LIKE 'scapia_%' OR name LIKE 'scapia_%'
+         OR meta_template_name LIKE '%mock%' OR name LIKE '%mock%';
+
       -- Synchronize fmcb_id_seq with highest numerical ID in campaign_master_leads
       SELECT setval(
         'fmcb_id_seq', 

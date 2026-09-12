@@ -43,6 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_repo_urn ON leads_repository(urn);
 
 -- 4. MASTER DATA CENTER (Zero-Duplicate Contact Repository)
 CREATE TABLE IF NOT EXISTS campaign_master_leads (
+    sr_no BIGSERIAL,
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     urn VARCHAR(50),
     fmcb_id VARCHAR(50) UNIQUE NOT NULL,
@@ -67,8 +68,11 @@ CREATE TABLE IF NOT EXISTS campaign_master_leads (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_master_leads_has_contact CHECK (phone IS NOT NULL OR email IS NOT NULL)
 );
+ALTER TABLE campaign_master_leads ADD COLUMN IF NOT EXISTS sr_no BIGSERIAL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_master_leads_phone ON campaign_master_leads(phone) WHERE phone IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_master_leads_email ON campaign_master_leads(LOWER(email)) WHERE email IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_master_leads_sr_no ON campaign_master_leads(sr_no);
+CREATE INDEX IF NOT EXISTS idx_master_leads_comp_sr_no ON campaign_master_leads(company_name, sr_no);
 CREATE INDEX IF NOT EXISTS idx_master_leads_urn ON campaign_master_leads(urn);
 CREATE INDEX IF NOT EXISTS idx_master_leads_fmcb ON campaign_master_leads(fmcb_id);
 CREATE INDEX IF NOT EXISTS idx_master_leads_company ON campaign_master_leads(company_name);
@@ -126,9 +130,11 @@ CREATE TABLE IF NOT EXISTS campaign_broadcasts (
     channel VARCHAR(50) NOT NULL CHECK (channel IN ('whatsapp', 'email', 'both')),
     tags TEXT[] DEFAULT '{}',
     whatsapp_gateway_id UUID REFERENCES gateways_config(id) ON DELETE SET NULL,
+    whatsapp_phone_number_id VARCHAR(100),
     email_gateway_id UUID REFERENCES gateways_config(id) ON DELETE SET NULL,
     whatsapp_template_id UUID REFERENCES campaign_templates(id) ON DELETE SET NULL,
     email_template_id UUID REFERENCES campaign_templates(id) ON DELETE SET NULL,
+    audience_filters JSONB DEFAULT '{}'::jsonb,
     status VARCHAR(50) DEFAULT 'draft' CHECK (status IN ('draft', 'scheduled', 'processing', 'completed', 'failed', 'paused')),
     execution_mode VARCHAR(50) DEFAULT 'immediate' CHECK (execution_mode IN ('immediate', 'scheduled')),
     scheduled_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,

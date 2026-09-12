@@ -84,13 +84,13 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
     let metaStatus: 'APPROVED' | 'PENDING' | 'REJECTED' | 'PAUSED' = 'APPROVED';
     let metaSyncMessage = 'Template saved to database.';
 
-    // If channel is WhatsApp, submit & register directly to Meta Graph API using company's WABA credentials
+    // If channel is WhatsApp, check if company has an active Meta Cloud API gateway
     if (channel === 'whatsapp') {
       const gwRes = await query(
         `SELECT * FROM gateways_config 
-         WHERE (company_name = $1 OR company_name = 'OmniReach Global') 
-           AND type LIKE 'whatsapp%' AND is_active = true 
-         ORDER BY (company_name = $1) DESC, is_default DESC LIMIT 1`,
+         WHERE company_name = $1 
+           AND type = 'whatsapp_meta' AND is_active = true 
+         ORDER BY is_default DESC LIMIT 1`,
         [assignedCompany]
       );
       const gw = gwRes.rows[0];
@@ -109,6 +109,9 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
 
         metaStatus = metaReg.status;
         metaSyncMessage = metaReg.message;
+      } else {
+        metaStatus = 'APPROVED';
+        metaSyncMessage = 'WhatsApp Template saved successfully for broadasting engine.';
       }
     }
 
@@ -160,7 +163,7 @@ router.post('/sync-all', authenticateToken, async (req: AuthenticatedRequest, re
     const isSuper = req.user?.role === 'superadmin';
     const targetComp = req.body.company_name || req.query.company_name;
 
-    let gwQuery = `SELECT * FROM gateways_config WHERE type LIKE 'whatsapp%' AND is_active = true`;
+    let gwQuery = `SELECT * FROM gateways_config WHERE type = 'whatsapp_meta' AND is_active = true`;
     const gwParams: any[] = [];
     if (!isSuper) {
       gwQuery += ` AND company_name = $1`;
