@@ -169,9 +169,17 @@ export async function processBroadcast(broadcast: any) {
         }
       }
     } else {
-      // Linked direct upload
-      baseParams.push(broadcast.id);
-      baseConditions.push(`last_broadcast_id = $${baseParams.length}`);
+      // Linked direct upload (targeted leads from uploaded file)
+      if (filters && Array.isArray(filters.lead_ids) && filters.lead_ids.length > 0) {
+        baseParams.push(broadcast.id);
+        const p1 = baseParams.length;
+        baseParams.push(filters.lead_ids);
+        const p2 = baseParams.length;
+        baseConditions.push(`(last_broadcast_id = $${p1} OR id = ANY($${p2}::uuid[]))`);
+      } else {
+        baseParams.push(broadcast.id);
+        baseConditions.push(`last_broadcast_id = $${baseParams.length}`);
+      }
     }
 
     const baseWhereSql = baseConditions.length > 0 ? `WHERE ${baseConditions.join(' AND ')}` : '';

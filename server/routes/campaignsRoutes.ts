@@ -126,6 +126,26 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
 
     const newBroadcast = insertRes.rows[0];
 
+    // If audience was uploaded, link the lead IDs to this broadcast
+    if (
+      audience_filters &&
+      audience_filters.source === 'upload' &&
+      Array.isArray(audience_filters.lead_ids) &&
+      audience_filters.lead_ids.length > 0
+    ) {
+      try {
+        await query(
+          `UPDATE campaign_master_leads 
+           SET last_broadcast_id = $1 
+           WHERE id = ANY($2::uuid[])`,
+          [newBroadcast.id, audience_filters.lead_ids]
+        );
+        console.log(`[Campaigns] Linked ${audience_filters.lead_ids.length} uploaded leads to broadcast ${newBroadcast.id}`);
+      } catch (linkErr) {
+        console.warn('Notice linking uploaded leads to broadcast:', linkErr);
+      }
+    }
+
     await logAdminAudit(
       req.user!.id,
       'CREATE_CAMPAIGN',
