@@ -27,6 +27,7 @@ import {
   Check,
   AlertCircle,
   Building,
+  ShieldAlert,
 } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { useAuth } from '../context/AuthContext';
@@ -112,6 +113,83 @@ export const MasterDataCenter: React.FC = () => {
     whatsapp_optin: true,
     email_optin: true,
   });
+
+  // Superadmin Wipe Company Data Modal State
+  const [showWipeModal, setShowWipeModal] = useState(false);
+  const [wipeCompany, setWipeCompany] = useState<string>('');
+  const [wipeCount, setWipeCount] = useState<number | null>(null);
+  const [wipeCounting, setWipeCounting] = useState(false);
+  const [wipeConfirmText, setWipeConfirmText] = useState('');
+  const [wipeLoading, setWipeLoading] = useState(false);
+  const [wipeError, setWipeError] = useState<string | null>(null);
+  const [wipeSuccess, setWipeSuccess] = useState<string | null>(null);
+
+  const fetchWipeCompanyCount = async (comp: string) => {
+    if (!comp || comp === 'all') {
+      setWipeCount(null);
+      return;
+    }
+    try {
+      setWipeCounting(true);
+      const res = await axios.get('/api/leads/count', { params: { company_name: comp } });
+      if (res.data.success) {
+        setWipeCount(res.data.count);
+      }
+    } catch (e) {
+      console.error('Failed to get company count:', e);
+    } finally {
+      setWipeCounting(false);
+    }
+  };
+
+  const handleOpenWipeModal = () => {
+    const defaultCompany = selectedCompanyFilter !== 'all' ? selectedCompanyFilter : (companies[0] || '');
+    setWipeCompany(defaultCompany);
+    setWipeConfirmText('');
+    setWipeError(null);
+    setWipeSuccess(null);
+    setShowWipeModal(true);
+    if (defaultCompany) {
+      fetchWipeCompanyCount(defaultCompany);
+    }
+  };
+
+  const handleWipeCompanySubmit = async () => {
+    if (!wipeCompany || wipeCompany === 'all') {
+      setWipeError('Please select a specific company to wipe.');
+      return;
+    }
+    if (wipeConfirmText.trim().toUpperCase() !== 'WIPE' && wipeConfirmText.trim() !== wipeCompany.trim()) {
+      setWipeError(`Confirmation mismatch. Please type "WIPE" or "${wipeCompany}" to confirm.`);
+      return;
+    }
+
+    try {
+      setWipeLoading(true);
+      setWipeError(null);
+      const res = await axios.post('/api/leads/wipe-company', {
+        company_name: wipeCompany,
+      });
+
+      if (res.data.success) {
+        setWipeSuccess(res.data.message || `Successfully wiped all contacts for ${wipeCompany}.`);
+        fetchLeads();
+        if (isSuperadmin) {
+          fetchCompanies();
+        }
+        setTimeout(() => {
+          setShowWipeModal(false);
+          setWipeSuccess(null);
+          setWipeConfirmText('');
+        }, 1500);
+      }
+    } catch (err: any) {
+      console.error('Wipe company failed:', err);
+      setWipeError(err.response?.data?.message || 'Failed to wipe company contacts.');
+    } finally {
+      setWipeLoading(false);
+    }
+  };
 
   // 300ms Search Debounce — updates debouncedSearch which triggers the SINGLE main effect
   useEffect(() => {
@@ -594,6 +672,17 @@ export const MasterDataCenter: React.FC = () => {
             <Upload size={14} className="text-blue-400" />
             <span>Bulk Ingest</span>
           </button>
+
+          {isSuperadmin && (
+            <button
+              onClick={handleOpenWipeModal}
+              className="px-3.5 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 text-xs font-bold border border-rose-500/30 flex items-center gap-1.5 transition-all shadow-sm"
+              title="Superadmin Only: Permanently erase all contacts for a selected company"
+            >
+              <Trash2 size={14} className="text-rose-400" />
+              <span>Wipe Company Data</span>
+            </button>
+          )}
 
           <button
             onClick={() => {
@@ -1571,6 +1660,167 @@ export const MasterDataCenter: React.FC = () => {
                 )}
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Wipe Company Master Data Modal (Superadmin Only) */}
+      {isSuperadmin && showWipeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-[#0f172a] border border-rose-500/30 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden animate-scaleIn">
+            <div className="px-6 py-4 bg-rose-950/30 border-b border-rose-500/20 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center justify-center">
+                  <Trash2 size={16} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>Wipe Company Master Contacts</span>
+                    <span className="text-[10px] font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded-full">
+                      SUPERADMIN ONLY
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">Permanently erase all repository contacts for a selected tenant</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowWipeModal(false);
+                  setWipeError(null);
+                  setWipeSuccess(null);
+                }}
+                className="p-1 text-slate-400 hover:text-slate-200 rounded"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {wipeError && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs flex items-center gap-2">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{wipeError}</span>
+                </div>
+              )}
+
+              {wipeSuccess && (
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs flex items-center gap-2">
+                  <CheckCircle2 size={14} className="shrink-0" />
+                  <span>{wipeSuccess}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>Select Company to Wipe:</span>
+                  <span className="text-[11px] text-slate-400">
+                    {companies.length} registered companies
+                  </span>
+                </label>
+                <div className="relative">
+                  <Building size={14} className="absolute left-3.5 top-3 text-slate-500" />
+                  <select
+                    value={wipeCompany}
+                    onChange={(e) => {
+                      setWipeCompany(e.target.value);
+                      fetchWipeCompanyCount(e.target.value);
+                    }}
+                    disabled={wipeLoading}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-rose-500 font-semibold"
+                  >
+                    <option value="" disabled>-- Select Company --</option>
+                    {companies.map((c) => (
+                      <option key={c} value={c}>
+                        🏢 {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Warning and Count Box */}
+              {wipeCompany && (
+                <div className="p-4 bg-rose-950/20 border border-rose-500/30 rounded-2xl space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-rose-400">
+                    <span className="flex items-center gap-1.5">
+                      <ShieldAlert size={15} />
+                      <span>Permanent Erasure Warning</span>
+                    </span>
+                    {wipeCounting ? (
+                      <span className="text-[11px] text-slate-400 animate-pulse">Calculating contacts...</span>
+                    ) : wipeCount !== null ? (
+                      <span className="text-xs font-mono font-extrabold text-rose-300 bg-rose-500/20 px-2 py-0.5 rounded border border-rose-500/30">
+                        {wipeCount.toLocaleString()} Contacts Found
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    This action will immediately and permanently erase all{' '}
+                    <strong className="text-white font-mono">{wipeCount !== null ? wipeCount.toLocaleString() : ''}</strong>{' '}
+                    contact records, assigned FMCB IDs, sequential Sr. Nos, and customer metadata for{' '}
+                    <strong className="text-rose-300 underline font-bold">"{wipeCompany}"</strong>.
+                  </p>
+                  <p className="text-[10px] text-rose-400/80 font-semibold">
+                    ⚠️ This operation cannot be reversed. Other companies' data will remain untouched.
+                  </p>
+                </div>
+              )}
+
+              {/* Confirmation Input */}
+              {wipeCompany && (
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">
+                    To confirm, please type <strong className="text-rose-400 font-mono bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">WIPE</strong> or{' '}
+                    <strong className="text-rose-400 font-mono bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20">{wipeCompany}</strong> below:
+                  </label>
+                  <input
+                    type="text"
+                    value={wipeConfirmText}
+                    onChange={(e) => setWipeConfirmText(e.target.value)}
+                    disabled={wipeLoading}
+                    placeholder={`Type WIPE or ${wipeCompany} to unlock`}
+                    className="w-full bg-[#070b14] border border-slate-800 rounded-xl px-4 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-rose-500 font-mono font-semibold"
+                  />
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowWipeModal(false);
+                    setWipeError(null);
+                    setWipeSuccess(null);
+                  }}
+                  disabled={wipeLoading}
+                  className="px-4 py-2 bg-[#070b14] hover:bg-slate-800 text-slate-300 text-xs font-semibold rounded-xl border border-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleWipeCompanySubmit}
+                  disabled={
+                    wipeLoading ||
+                    !wipeCompany ||
+                    (wipeConfirmText.trim().toUpperCase() !== 'WIPE' && wipeConfirmText.trim() !== wipeCompany.trim())
+                  }
+                  className="px-5 py-2 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-rose-600/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-1.5"
+                >
+                  {wipeLoading ? (
+                    <>
+                      <RefreshCw size={13} className="animate-spin" />
+                      <span>Erasing Contacts...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={13} />
+                      <span>Erase All Contacts for {wipeCompany || 'Company'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

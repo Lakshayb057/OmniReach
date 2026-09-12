@@ -532,6 +532,78 @@ const handleBatchDelete = async (req: AuthenticatedRequest, res: express.Respons
 router.delete('/batch-delete', authenticateToken, handleBatchDelete);
 router.post('/batch-delete', authenticateToken, handleBatchDelete);
 
+// 8b. Wipe Company Master Data (STRICT: Superadmin Only)
+router.post('/wipe-company', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  if (req.user?.role !== 'superadmin') {
+    res.status(403).json({ success: false, message: 'Access denied: Only Superadmin can wipe company master data.' });
+    return;
+  }
+
+  const { company_name } = req.body;
+  if (!company_name || typeof company_name !== 'string' || !company_name.trim()) {
+    res.status(400).json({ success: false, message: 'Valid company name is required.' });
+    return;
+  }
+
+  const trimmedCompany = company_name.trim();
+  if (trimmedCompany.toLowerCase() === 'all' || trimmedCompany.toLowerCase().includes('all companies')) {
+    res.status(400).json({ success: false, message: 'Please select a specific company to wipe.' });
+    return;
+  }
+
+  try {
+    // Check if there is an active broadcast currently dispatching for this company
+    const activeBcasts = await query(
+      `SELECT id, name FROM campaign_broadcasts 
+       WHERE LOWER(TRIM(company_name)) = LOWER(TRIM($1)) AND status = 'processing'`,
+      [trimmedCompany]
+    );
+    if (activeBcasts.rows.length > 0) {
+      res.status(400).json({
+        success: false,
+        message: `Cannot wipe data while broadcast "${activeBcasts.rows[0].name}" is actively processing for ${trimmedCompany}. Please pause or complete it first.`,
+      });
+      return;
+    }
+
+    // Delete all master contacts for this company using indexed lower trim matching
+    const delRes = await query(
+      `DELETE FROM campaign_master_leads 
+       WHERE LOWER(TRIM(company_name)) = LOWER(TRIM($1))`,
+      [trimmedCompany]
+    );
+
+    const deletedCount = delRes.rowCount || 0;
+
+    await logAdminAudit(
+      req.user!.id,
+      'WIPE_COMPANY_MASTER_DATA',
+      'campaign_master_leads',
+      undefined,
+      { company: trimmedCompany, erasedCount: deletedCount },
+      req.ip
+    );
+
+    emitBroadcastUpdate({
+      type: 'LEADS_UPDATED',
+      action: 'WIPE_COMPANY',
+      company: trimmedCompany,
+      deletedCount,
+    });
+
+    console.log(`[LeadsAPI] Superadmin wiped ${deletedCount} contacts for company "${trimmedCompany}"`);
+
+    res.json({
+      success: true,
+      deletedCount,
+      message: `Successfully erased ${deletedCount.toLocaleString()} contacts from Master Data Center for company "${trimmedCompany}".`,
+    });
+  } catch (err: any) {
+    console.error('Wipe company leads error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // 9. Upload CSV / Excel or Ingest JSON Contacts
 router.post('/upload', authenticateToken, upload.single('file'), async (req: AuthenticatedRequest, res): Promise<void> => {
   try {
