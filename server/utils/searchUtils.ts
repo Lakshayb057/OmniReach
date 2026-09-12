@@ -24,7 +24,19 @@ export function buildSearchClauses(searchStr: string, startingParamIdx: number):
     return `$${startingParamIdx + params.length - 1}`;
   };
 
-  // 1. Check if searching by Sr. No (e.g. #6, # 6, or pure numeric up to 8 digits)
+  // 1. Check if searching by Company Initial + Sr. No (e.g. #S1, S1, #O25, O25)
+  const initialMatch = rawSearch.match(/^#?\s*([A-Za-z])\s*(\d+)$/i);
+  if (initialMatch) {
+    const initialChar = initialMatch[1].toUpperCase();
+    const num = parseInt(initialMatch[2], 10);
+    if (!isNaN(num) && num > 0) {
+      const pNum = addParam(num);
+      const pInit = addParam(`${initialChar}%`);
+      orConditions.push(`(COALESCE(company_sr_no, sr_no) = ${pNum} AND company_name ILIKE ${pInit})`);
+    }
+  }
+
+  // Check if searching by numeric Sr. No (e.g. #6, # 6, or pure numeric up to 8 digits)
   let srNoCandidate: number | null = null;
   if (rawSearch.startsWith('#')) {
     const parsed = parseInt(rawSearch.replace(/^#\s*/, ''), 10);
@@ -36,7 +48,7 @@ export function buildSearchClauses(searchStr: string, startingParamIdx: number):
 
   if (srNoCandidate !== null) {
     const p = addParam(srNoCandidate);
-    orConditions.push(`sr_no = ${p}`);
+    orConditions.push(`(company_sr_no = ${p} OR sr_no = ${p})`);
   }
 
   // 2. Phone variants
@@ -69,8 +81,8 @@ export function buildSearchClauses(searchStr: string, startingParamIdx: number):
     orConditions.push(`email ILIKE ${pEmail}`);
   }
 
-  // 4. FMCB or URN specific search
-  if (rawSearch.toUpperCase().startsWith('FMCB')) {
+  // 4. OMCB / FMCB or URN specific search
+  if (rawSearch.toUpperCase().startsWith('OMCB') || rawSearch.toUpperCase().startsWith('FMCB') || (rawSearch.toUpperCase().startsWith('OM') && /\d/.test(rawSearch))) {
     const pFmcb = addParam(`%${rawSearch}%`);
     orConditions.push(`fmcb_id ILIKE ${pFmcb}`);
   } else if (rawSearch.toUpperCase().startsWith('URN')) {
@@ -94,7 +106,7 @@ export function buildSearchClauses(searchStr: string, startingParamIdx: number):
     if (!rawSearch.toUpperCase().startsWith('URN')) {
       orConditions.push(`urn ILIKE ${pGen}`);
     }
-    if (!rawSearch.toUpperCase().startsWith('FMCB')) {
+    if (!rawSearch.toUpperCase().startsWith('OMCB') && !rawSearch.toUpperCase().startsWith('FMCB')) {
       orConditions.push(`fmcb_id ILIKE ${pGen}`);
     }
   }
@@ -132,14 +144,14 @@ export function buildLeadsWhereClause(req: AuthenticatedRequest) {
     const s = parseInt(sr_no_start as string, 10);
     if (!isNaN(s)) {
       params.push(s);
-      whereClauses.push(`sr_no >= $${params.length}`);
+      whereClauses.push(`COALESCE(company_sr_no, sr_no) >= $${params.length}`);
     }
   }
   if (sr_no_end) {
     const e = parseInt(sr_no_end as string, 10);
     if (!isNaN(e)) {
       params.push(e);
-      whereClauses.push(`sr_no <= $${params.length}`);
+      whereClauses.push(`COALESCE(company_sr_no, sr_no) <= $${params.length}`);
     }
   }
 

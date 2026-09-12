@@ -57,6 +57,10 @@ export async function initializeDatabase() {
       -- Audience Filters (Sr. No Range, Optin, Channel) for Broadcast Campaigns
       ALTER TABLE campaign_broadcasts ADD COLUMN IF NOT EXISTS audience_filters JSONB DEFAULT '{}'::jsonb;
       ALTER TABLE campaign_broadcasts ADD COLUMN IF NOT EXISTS whatsapp_phone_number_id VARCHAR(100);
+
+      -- Dedicated per-company sequential serial numbers (1..N unbroken per company)
+      ALTER TABLE campaign_master_leads ADD COLUMN IF NOT EXISTS company_sr_no BIGINT;
+      CREATE INDEX IF NOT EXISTS idx_master_leads_co_srno ON campaign_master_leads (LOWER(TRIM(company_name)), company_sr_no);
     `);
 
     // High-Performance Trigram GIN Search Indexes
@@ -80,6 +84,39 @@ export async function initializeDatabase() {
       console.warn('GIN Trigram extension notice:', trgmErr);
     }
 
+    // Auto-migrate FMCB to OMCB (OmniReach / OM Rebranding)
+    try {
+      const omcbRes = await pool.query(`
+        UPDATE campaign_master_leads 
+        SET fmcb_id = REPLACE(fmcb_id, 'FMCB', 'OMCB') 
+        WHERE fmcb_id LIKE 'FMCB%'
+      `);
+      if (omcbRes.rowCount && omcbRes.rowCount > 0) {
+        console.log(`✨ Migrated ${omcbRes.rowCount} contact(s) from FMCB to OMCB identifier format.`);
+      }
+    } catch (omcbErr) {
+      console.warn('OMCB migration notice:', omcbErr);
+    }
+
+    // Auto-renumber company_sr_no so every company's series starts strictly at 1 without breaks
+    try {
+      const renumberRes = await pool.query(`
+        WITH renumbered AS (
+          SELECT id, ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(company_name)) ORDER BY sr_no ASC, created_at ASC, id ASC) AS new_sr
+          FROM campaign_master_leads
+        )
+        UPDATE campaign_master_leads c
+        SET company_sr_no = r.new_sr
+        FROM renumbered r
+        WHERE c.id = r.id AND (c.company_sr_no IS NULL OR c.company_sr_no != r.new_sr)
+      `);
+      if (renumberRes.rowCount && renumberRes.rowCount > 0) {
+        console.log(`🔢 Renumbered ${renumberRes.rowCount} contact(s) with clean per-company serials starting at 1.`);
+      }
+    } catch (renumberErr) {
+      console.warn('Company Sr. No renumber notice:', renumberErr);
+    }
+
     // Recover any broadcasts stuck in 'processing' on restart/redeploy
     try {
       const rec = await pool.query(`
@@ -95,10 +132,9 @@ export async function initializeDatabase() {
     }
 
     await pool.query(`
-
       -- Purge legacy mock templates
       DELETE FROM campaign_templates 
-      WHERE meta_template_name LIKE 'finmantra_%' OR name LIKE 'finmantra_%' 
+      WHERE meta_template_name LIKE 'omnireach_%' OR name LIKE 'omnireach_%' 
          OR meta_template_name LIKE 'scapia_%' OR name LIKE 'scapia_%'
          OR meta_template_name LIKE '%mock%' OR name LIKE '%mock%';
 

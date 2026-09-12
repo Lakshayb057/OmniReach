@@ -405,7 +405,7 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
                   <tr>
                     <th className="p-2.5">Customer Name</th>
                     <th className="p-2.5">Contact / Email</th>
-                    <th className="p-2.5">URN / FMCB ID</th>
+                    <th className="p-2.5">URN / OMCB ID</th>
                     <th className="p-2.5">Channel</th>
                     <th className="p-2.5">Status</th>
                     <th className="p-2.5">Message / Error Details</th>

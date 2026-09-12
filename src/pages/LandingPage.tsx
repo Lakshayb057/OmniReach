@@ -705,7 +705,7 @@ export const LandingPage: React.FC = () => {
                     ZERO-DUP ENGINE
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                    Automatic normalization against ground truth leads repository with sequential FMCB URN key generation.
+                    Automatic normalization against ground truth leads repository with sequential OMCB URN key generation.
                   </p>
                 </div>
               </div>

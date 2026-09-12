@@ -1292,7 +1292,7 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
                           </div>
                         </div>
                         <div className="bg-[#070b14] p-2.5 rounded-xl border border-slate-800/80 shadow-sm">
-                          <div className="text-slate-400 text-[10px]">Sequential FMCB</div>
+                          <div className="text-slate-400 text-[10px]">Sequential OMCB</div>
                           <div className="font-bold text-cyan-400 font-mono text-sm mt-0.5">
                             {ingestionReport.newFmcbCount}
                           </div>

@@ -833,7 +833,7 @@ export const MasterDataCenter: React.FC = () => {
             <Search size={15} className="absolute left-3.5 top-2.5 text-slate-500" />
             <input
               type="text"
-              placeholder="Search Name, Phone, Email, URN, FMCB, City..."
+              placeholder="Search Name, Phone, Email, URN, OMCB, City, Sr. No (e.g. S1 or 1)..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full bg-[#070b14] border border-slate-800 rounded-xl pl-10 pr-9 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
@@ -1052,7 +1052,7 @@ export const MasterDataCenter: React.FC = () => {
                   <span>Customer Name & City</span>
                   {renderSortIndicator('full_name')}
                 </th>
-                <th className="p-3.5">URN / Sequential FMCB</th>
+                <th className="p-3.5">URN / Sequential OMCB</th>
                 <th
                   onClick={() => handleSort('phone')}
                   className="p-3.5 cursor-pointer hover:text-slate-200 transition-colors"
@@ -1139,7 +1139,7 @@ export const MasterDataCenter: React.FC = () => {
                       />
                     </td>
                     <td className="p-3.5 text-center font-mono font-bold text-amber-400 text-xs">
-                      #{lead.sr_no || '—'}
+                      #{lead.display_sr_no || (lead.company_sr_no ? (isSuperadmin ? `${(lead.company_name || 'O').trim().charAt(0).toUpperCase()}${lead.company_sr_no}` : `${lead.company_sr_no}`) : lead.sr_no) || '—'}
                     </td>
                     {isSuperadmin && (
                       <td className="p-3.5">
@@ -1322,7 +1322,7 @@ export const MasterDataCenter: React.FC = () => {
                   Add Master Contact
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  Priority phone matching • Auto-sequential FMCB ID & immutable Sr. No
+                  Priority phone matching • Auto-sequential OMCB ID & unbroken Sr. No
                 </p>
               </div>
               <button
@@ -1752,7 +1752,7 @@ export const MasterDataCenter: React.FC = () => {
                       URN Ground Truth: <span className="font-bold text-purple-400 font-mono text-xs">{uploadReport.matchedUrnCount.toLocaleString()}</span>
                     </div>
                     <div className="bg-[#070b14] p-2.5 rounded-xl border border-slate-800 text-slate-300">
-                      Sequential FMCB IDs: <span className="font-bold text-cyan-400 font-mono text-xs">{uploadReport.newFmcbCount.toLocaleString()}</span>
+                      Sequential OMCB IDs: <span className="font-bold text-cyan-400 font-mono text-xs">{(uploadReport.newOmcbCount || uploadReport.newFmcbCount || 0).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>
@@ -1920,7 +1920,7 @@ export const MasterDataCenter: React.FC = () => {
                       <p className="text-[11px] text-slate-300 leading-relaxed">
                         This action will immediately and permanently erase all{' '}
                         <strong className="text-white font-mono">{wipeCount !== null ? wipeCount.toLocaleString() : ''}</strong>{' '}
-                        contact records, assigned FMCB IDs, sequential Sr. Nos, and customer metadata for{' '}
+                        contact records, assigned OMCB IDs, unbroken Sr. Nos, and customer metadata for{' '}
                         <strong className="text-rose-300 underline font-bold">"{wipeCompany}"</strong>.
                       </p>
                       <p className="text-[10px] text-rose-400/80 font-semibold">

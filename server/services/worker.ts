@@ -137,11 +137,11 @@ export async function processBroadcast(broadcast: any) {
       // Sr. No Range Filter
       if (filters.sr_no_start !== undefined && filters.sr_no_start !== null && filters.sr_no_start !== '') {
         baseParams.push(Number(filters.sr_no_start));
-        baseConditions.push(`sr_no >= $${baseParams.length}`);
+        baseConditions.push(`COALESCE(company_sr_no, sr_no) >= $${baseParams.length}`);
       }
       if (filters.sr_no_end !== undefined && filters.sr_no_end !== null && filters.sr_no_end !== '') {
         baseParams.push(Number(filters.sr_no_end));
-        baseConditions.push(`sr_no <= $${baseParams.length}`);
+        baseConditions.push(`COALESCE(company_sr_no, sr_no) <= $${baseParams.length}`);
       }
 
       // Channel requirement filter

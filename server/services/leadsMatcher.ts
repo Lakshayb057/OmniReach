@@ -72,7 +72,7 @@ export function validateEmail(rawEmail?: string): string | null {
 }
 
 /**
- * Generates next sequential FMCB ID (e.g. FMCB00000001, FMCB00000002...).
+ * Generates next sequential OMCB ID (e.g. OMCB00000001, OMCB00000002...).
  */
 export async function getNextFmcbId(): Promise<string> {
   const res = await query(`
@@ -80,8 +80,10 @@ export async function getNextFmcbId(): Promise<string> {
     FROM campaign_master_leads
   `);
   const num = parseInt(res.rows[0].next_id, 10);
-  return `FMCB${String(num).padStart(8, '0')}`;
+  return `OMCB${String(num).padStart(8, '0')}`;
 }
+
+export const getNextOmcbId = getNextFmcbId;
 
 /**
  * Ingests a batch of raw contact records with zero duplicate upsert,
@@ -203,6 +205,15 @@ export async function ingestContactsBatch(
     const masterCheck = await client.query('SELECT 1 FROM campaign_master_leads LIMIT 1');
     const hasMaster = (masterCheck.rowCount ?? 0) > 0;
 
+    // Fetch current max company_sr_no for unbroken sequential numbers per company
+    const maxCoSrRes = await client.query(
+      `SELECT COALESCE(MAX(company_sr_no), 0) as max_sr 
+       FROM campaign_master_leads 
+       WHERE LOWER(TRIM(company_name)) = LOWER(TRIM($1))`,
+      [companyName]
+    );
+    let currentCompanySrNo = parseInt(maxCoSrRes.rows[0]?.max_sr || '0', 10);
+
     // Process in chunks of 2,000 contacts for ultra-high speed and low memory
     const CHUNK_SIZE = 2000;
 
@@ -276,7 +287,8 @@ export async function ingestContactsBatch(
           });
           result.leadIds.push(dbRecord.id);
         } else {
-          // Truly new contact: prepare for insert with next sequential FMCB ID
+          // Truly new contact: prepare for insert with next sequential OMCB ID and unbroken company_sr_no
+          currentCompanySrNo++;
           toInsert.push({
             urn: mappedUrn,
             companyName,
@@ -288,6 +300,7 @@ export async function ingestContactsBatch(
             city: contact.city,
             custom_attributes: contact.custom_attributes,
             last_broadcast_id: broadcastId || null,
+            company_sr_no: currentCompanySrNo,
           });
         }
       }
@@ -299,9 +312,9 @@ export async function ingestContactsBatch(
 
         for (let i = 0; i < toInsert.length; i++) {
           const item = toInsert[i];
-          const offset = i * 10;
+          const offset = i * 11;
           insertTuples.push(
-            `($${offset + 1}, 'FMCB' || LPAD(nextval('fmcb_id_seq')::text, 8, '0'), $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, CURRENT_TIMESTAMP)`
+            `($${offset + 1}, 'OMCB' || LPAD(nextval('fmcb_id_seq')::text, 8, '0'), $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, CURRENT_TIMESTAMP, $${offset + 11})`
           );
           insertParams.push(
             item.urn,
@@ -313,13 +326,14 @@ export async function ingestContactsBatch(
             item.pan_no,
             item.city,
             JSON.stringify(item.custom_attributes || {}),
-            item.last_broadcast_id
+            item.last_broadcast_id,
+            item.company_sr_no
           );
         }
 
         const insertSql = `
           INSERT INTO campaign_master_leads 
-          (urn, fmcb_id, company_name, full_name, phone, email, address, pan_no, city, custom_attributes, last_broadcast_id, updated_at)
+          (urn, fmcb_id, company_name, full_name, phone, email, address, pan_no, city, custom_attributes, last_broadcast_id, updated_at, company_sr_no)
           VALUES ${insertTuples.join(',\n')}
           RETURNING id
         `;

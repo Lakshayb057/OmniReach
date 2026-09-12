@@ -73,7 +73,8 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res): Promi
     const offset = (pageNum - 1) * limitNum;
 
     const validSortColumns: Record<string, string> = {
-      sr_no: 'sr_no',
+      sr_no: 'COALESCE(company_sr_no, sr_no)',
+      company_sr_no: 'COALESCE(company_sr_no, sr_no)',
       full_name: 'full_name',
       phone: 'phone',
       email: 'email',
@@ -83,7 +84,7 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res): Promi
       last_contacted_at: 'last_contacted_at',
     };
 
-    const sortColumn = validSortColumns[String(sort_by).toLowerCase()] || 'sr_no';
+    const sortColumn = validSortColumns[String(sort_by).toLowerCase()] || 'COALESCE(company_sr_no, sr_no)';
     const sortDirection = String(sort_dir).toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
     const dataParams = [...params, limitNum, offset];
@@ -101,10 +102,27 @@ router.get('/', authenticateToken, async (req: AuthenticatedRequest, res): Promi
     ]);
 
     const total = parseInt(countRes.rows[0]?.count || '0', 10);
+    const isSuperadmin = req.user?.role === 'superadmin';
+
+    const mappedRows = dataRes.rows.map((lead: any) => {
+      const coSr = lead.company_sr_no != null ? Number(lead.company_sr_no) : Number(lead.sr_no);
+      let display_sr_no: string;
+      if (isSuperadmin) {
+        const initial = lead.company_name ? lead.company_name.trim().charAt(0).toUpperCase() : 'O';
+        display_sr_no = `${initial}${coSr}`;
+      } else {
+        display_sr_no = `${coSr}`;
+      }
+      return {
+        ...lead,
+        company_sr_no: coSr,
+        display_sr_no,
+      };
+    });
 
     res.json({
       success: true,
-      data: dataRes.rows,
+      data: mappedRows,
       pagination: {
         total,
         page: pageNum,
@@ -124,7 +142,9 @@ router.get('/count', authenticateToken, async (req: AuthenticatedRequest, res): 
     const { whereSql, params } = buildLeadsWhereClause(req);
 
     const r = await query(
-      `SELECT COUNT(*) as count, MIN(sr_no) as min_sr_no, MAX(sr_no) as max_sr_no 
+      `SELECT COUNT(*) as count, 
+              MIN(COALESCE(company_sr_no, sr_no)) as min_sr_no, 
+              MAX(COALESCE(company_sr_no, sr_no)) as max_sr_no 
        FROM campaign_master_leads ${whereSql}`,
       params
     );
@@ -148,11 +168,11 @@ router.get('/export', authenticateToken, async (req: AuthenticatedRequest, res):
 
     // Stream up to 50,000 rows with fast CSV generation
     const exportRes = await query(
-      `SELECT sr_no, full_name, phone, email, city, address, pan_no, urn, fmcb_id, company_name,
+      `SELECT COALESCE(company_sr_no, sr_no) as company_sr_no, sr_no, full_name, phone, email, city, address, pan_no, urn, fmcb_id, company_name,
               whatsapp_optin, email_optin, whatsapp_sent_count, email_sent_count, clicked_count, created_at
        FROM campaign_master_leads 
        ${whereSql} 
-       ORDER BY sr_no ASC 
+       ORDER BY COALESCE(company_sr_no, sr_no) ASC 
        LIMIT 50000`,
       params
     );
@@ -161,7 +181,7 @@ router.get('/export', authenticateToken, async (req: AuthenticatedRequest, res):
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="OmniReach_Master_Contacts_${Date.now()}.csv"`);
 
-    res.write('Sr No,Full Name,Phone,Email,City,Address,PAN,URN,FMCB ID,Company,WhatsApp Optin,Email Optin,WhatsApp Sent,Email Sent,Clicks,Created At\r\n');
+    res.write('Company Sr No,Global Sr No,Full Name,Phone,Email,City,Address,PAN,URN,OMCB ID,Company,WhatsApp Optin,Email Optin,WhatsApp Sent,Email Sent,Clicks,Created At\r\n');
 
     for (const r of rows) {
       const escapeCsv = (val: any) => {
@@ -171,6 +191,7 @@ router.get('/export', authenticateToken, async (req: AuthenticatedRequest, res):
       };
 
       const line = [
+        r.company_sr_no || r.sr_no,
         r.sr_no,
         escapeCsv(r.full_name),
         escapeCsv(r.phone ? `+${r.phone}` : ''),
@@ -288,11 +309,15 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
         ]
       );
 
+      const isSuperadmin = req.user?.role === 'superadmin';
+      const coSr = existingMatch.company_sr_no != null ? Number(existingMatch.company_sr_no) : Number(existingMatch.sr_no);
+      const displaySr = isSuperadmin ? `${(existingMatch.company_name || 'O').trim().charAt(0).toUpperCase()}${coSr}` : `${coSr}`;
+
       res.json({
         success: true,
         action: 'updated',
-        lead: updatedRes.rows[0],
-        message: `Existing contact (Sr. No #${existingMatch.sr_no}) matched and updated with priority. Zero duplicates created.`,
+        lead: { ...updatedRes.rows[0], company_sr_no: coSr, display_sr_no: displaySr },
+        message: `Existing contact (Sr. No #${displaySr}) matched and updated with priority. Zero duplicates created.`,
       });
       return;
     }
@@ -321,12 +346,20 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
 
     const fmcbId = await getNextFmcbId();
 
+    const nextCoSrRes = await query(
+      `SELECT COALESCE(MAX(company_sr_no), 0) + 1 as next_co_sr 
+       FROM campaign_master_leads 
+       WHERE LOWER(TRIM(company_name)) = LOWER(TRIM($1))`,
+      [company]
+    );
+    const nextCompanySrNo = parseInt(nextCoSrRes.rows[0]?.next_co_sr || '1', 10);
+
     const insertRes = await query(
       `INSERT INTO campaign_master_leads (
          full_name, phone, email, city, address, pan_no,
          whatsapp_optin, email_optin, company_name,
-         urn, fmcb_id, custom_attributes
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+         urn, fmcb_id, custom_attributes, company_sr_no
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13)
        RETURNING *`,
       [
         cleanName,
@@ -341,14 +374,18 @@ router.post('/', authenticateToken, async (req: AuthenticatedRequest, res): Prom
         assignedUrn,
         fmcbId,
         JSON.stringify(custom_attributes || {}),
+        nextCompanySrNo,
       ]
     );
+
+    const isSuperadmin = req.user?.role === 'superadmin';
+    const displaySr = isSuperadmin ? `${company.trim().charAt(0).toUpperCase()}${nextCompanySrNo}` : `${nextCompanySrNo}`;
 
     res.status(201).json({
       success: true,
       action: 'created',
-      lead: insertRes.rows[0],
-      message: `Contact successfully created with immutable Sr. No #${insertRes.rows[0].sr_no} and FMCB ID ${fmcbId}.`,
+      lead: { ...insertRes.rows[0], company_sr_no: nextCompanySrNo, display_sr_no: displaySr },
+      message: `Contact successfully created with Sr. No #${displaySr} and OMCB ID ${fmcbId}.`,
     });
   } catch (err: any) {
     console.error('Error creating contact:', err);
