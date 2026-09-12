@@ -11,6 +11,7 @@ import {
   getSessionRemainingMs,
   deleteConversation,
   batchDeleteConversations,
+  updateMessageReceiptStatus,
 } from '../services/inboxService';
 import { emitBroadcastUpdate } from '../services/worker';
 
@@ -20,12 +21,12 @@ function getCompanyCondition(req: AuthenticatedRequest, startingIndex: number): 
   if (req.user?.role === 'superadmin') {
     const { company_name } = req.query;
     if (company_name && company_name !== 'all' && company_name !== 'All Companies (Global)') {
-      return { clause: `c.company_name = $${startingIndex}`, params: [company_name] };
+      return { clause: `LOWER(TRIM(c.company_name)) = LOWER(TRIM($${startingIndex}))`, params: [company_name] };
     }
     return { clause: '', params: [] };
   }
   const compName = req.user?.company_name || 'Independent Enterprise';
-  return { clause: `c.company_name = $${startingIndex}`, params: [compName] };
+  return { clause: `LOWER(TRIM(c.company_name)) = LOWER(TRIM($${startingIndex}))`, params: [compName] };
 }
 
 // 1. List Conversations with View Filters & Search
@@ -153,10 +154,18 @@ router.get('/conversations/:id', authenticateToken, async (req: AuthenticatedReq
       return;
     }
 
+    const row = convRes.rows[0];
+    if (req.user?.role !== 'superadmin' && row.company_name && req.user?.company_name) {
+      if (row.company_name.trim().toLowerCase() !== req.user.company_name.trim().toLowerCase()) {
+        res.status(403).json({ success: false, message: 'Access denied: Conversation belongs to another company.' });
+        return;
+      }
+    }
+
     const conversation = {
-      ...convRes.rows[0],
-      is_session_active: isSessionActive(convRes.rows[0].session_expires_at),
-      session_remaining_ms: getSessionRemainingMs(convRes.rows[0].session_expires_at),
+      ...row,
+      is_session_active: isSessionActive(row.session_expires_at),
+      session_remaining_ms: getSessionRemainingMs(row.session_expires_at),
     };
 
     // Fetch messages stream
@@ -337,6 +346,20 @@ router.post('/webhook', async (req, res): Promise<void> => {
 
     // Handle Meta WhatsApp Cloud Webhook Payload format
     const entry = body?.entry?.[0]?.changes?.[0]?.value;
+
+    // Handle Meta Status Updates (Sent, Delivered, Read receipts)
+    if (entry?.statuses && entry.statuses.length > 0) {
+      for (const st of entry.statuses) {
+        const wamid = st.id;
+        const status = st.status; // 'sent' | 'delivered' | 'read' | 'failed'
+        if (wamid && (status === 'sent' || status === 'delivered' || status === 'read' || status === 'failed')) {
+          await updateMessageReceiptStatus(wamid, status);
+        }
+      }
+      res.status(200).send('EVENT_RECEIVED');
+      return;
+    }
+
     if (entry?.messages && entry.messages.length > 0) {
       const msg = entry.messages[0];
       const senderPhone = msg.from;

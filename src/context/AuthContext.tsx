@@ -23,11 +23,11 @@ interface AuthContextType {
   setIsWorkingOrProcessing: (working: boolean) => void;
 }
 
-const SESSION_TIMEOUT_MS = 15 * 60 * 1000; // 15 Minutes Inactivity Threshold
+const SESSION_TIMEOUT_MS = 365 * 24 * 60 * 60 * 1000; // Persistent Session (1 Year)
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const setAuthCookies = (authToken: string) => {
-  const maxAge = 15 * 60; // 15 minutes in seconds
+  const maxAge = 365 * 24 * 60 * 60; // 365 days in seconds
   document.cookie = `auth_token=${authToken}; max-age=${maxAge}; path=/; SameSite=Lax`;
   document.cookie = `session_active=1; max-age=${maxAge}; path=/; SameSite=Lax`;
 };
@@ -148,31 +148,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [user]);
 
-  // 3. Inactivity Checker (Checks every 10 seconds for 15-minute idle timeout)
-  useEffect(() => {
-    if (!user) return;
-
-    const interval = setInterval(() => {
-      // If software is under active processing (e.g. blast running, CSV parsing), keep session alive
-      if (isWorkingRef.current) {
-        lastActivityRef.current = Date.now();
-        localStorage.setItem('last_activity', String(Date.now()));
-        return;
-      }
-
-      // Check both local memory and localStorage (multi-tab sync)
-      const storedLastActivity = Number(localStorage.getItem('last_activity') || lastActivityRef.current);
-      const effectiveLastActivity = Math.max(lastActivityRef.current, storedLastActivity);
-      const idleTime = Date.now() - effectiveLastActivity;
-
-      if (idleTime >= SESSION_TIMEOUT_MS) {
-        console.warn('Session expired due to 15 minutes of inactivity.');
-        logout('inactivity');
-      }
-    }, 10000);
-
-    return () => clearInterval(interval);
-  }, [user, logout]);
+  // 3. Persistent Session - No idle auto-logout (15-minute logout removed)
+  // Sessions remain active until manual logout or explicit token revocation.
 
   // 4. Axios Interceptor for Automatic 401 Session Expiry Catch
   useEffect(() => {

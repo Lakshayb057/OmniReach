@@ -110,6 +110,9 @@ export const WhatsAppInbox: React.FC = () => {
   const [selectedConvIds, setSelectedConvIds] = useState<string[]>([]);
   const [isDeletingConv, setIsDeletingConv] = useState(false);
 
+  const [selectedCompanyFilter, setSelectedCompanyFilter] = useState<string>('all');
+  const [companiesList, setCompaniesList] = useState<string[]>([]);
+
   const [activeView, setActiveView] = useState<'all' | 'mine' | 'unassigned' | 'bot_handling' | 'pending' | 'resolved' | 'urgent'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -138,7 +141,21 @@ export const WhatsAppInbox: React.FC = () => {
     fetchAgents();
     fetchJourneys();
     fetchGateways();
-  }, [activeView, searchQuery]);
+    if (isSuperadmin) {
+      fetchCompanies();
+    }
+  }, [activeView, searchQuery, selectedCompanyFilter]);
+
+  const fetchCompanies = async () => {
+    try {
+      const res = await axios.get('/api/leads/companies');
+      if (res.data.success) {
+        setCompaniesList(res.data.companies || []);
+      }
+    } catch (err) {
+      console.error('Failed to load companies in inbox:', err);
+    }
+  };
 
   // Real-time WebSocket Listeners
   useEffect(() => {
@@ -155,6 +172,15 @@ export const WhatsAppInbox: React.FC = () => {
       if (selectedConv && data.conversation_id === selectedConv.id) {
         loadConversationDetails(selectedConv.id, false);
       }
+    } else if (data?.type === 'INBOX_MESSAGE_STATUS') {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id === data.message_id || (data.whatsapp_message_id && m.whatsapp_message_id === data.whatsapp_message_id)) {
+            return { ...m, status: data.status };
+          }
+          return m;
+        })
+      );
     } else if (data?.type === 'CONVERSATION_DELETED') {
       const deletedId = data.conversation_id;
       setConversations((prev) => prev.filter((c) => c.id !== deletedId));
@@ -164,7 +190,7 @@ export const WhatsAppInbox: React.FC = () => {
         setMessages([]);
       }
     }
-  }, [lastEvent, selectedConv]);
+  }, [lastEvent]);
 
   // Direct socket listener
   useEffect(() => {
@@ -182,6 +208,15 @@ export const WhatsAppInbox: React.FC = () => {
         if (selectedConv && data.conversation_id === selectedConv.id) {
           loadConversationDetails(selectedConv.id, false);
         }
+      } else if (data.type === 'INBOX_MESSAGE_STATUS') {
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id === data.message_id || (data.whatsapp_message_id && m.whatsapp_message_id === data.whatsapp_message_id)) {
+              return { ...m, status: data.status };
+            }
+            return m;
+          })
+        );
       } else if (data.type === 'CONVERSATION_DELETED') {
         const deletedId = data.conversation_id;
         setConversations((prev) => prev.filter((c) => c.id !== deletedId));
@@ -196,6 +231,7 @@ export const WhatsAppInbox: React.FC = () => {
     socket.on('BROADCAST_UPDATED', handleBroadcastUpdate);
     socket.on('INBOX_MESSAGE_RECEIVED', handleBroadcastUpdate);
     socket.on('INBOX_MESSAGE_SENT', handleBroadcastUpdate);
+    socket.on('INBOX_MESSAGE_STATUS', handleBroadcastUpdate);
     socket.on('CONVERSATION_UPDATED', handleBroadcastUpdate);
     socket.on('CONVERSATION_DELETED', handleBroadcastUpdate);
 
@@ -203,6 +239,7 @@ export const WhatsAppInbox: React.FC = () => {
       socket.off('BROADCAST_UPDATED', handleBroadcastUpdate);
       socket.off('INBOX_MESSAGE_RECEIVED', handleBroadcastUpdate);
       socket.off('INBOX_MESSAGE_SENT', handleBroadcastUpdate);
+      socket.off('INBOX_MESSAGE_STATUS', handleBroadcastUpdate);
       socket.off('CONVERSATION_UPDATED', handleBroadcastUpdate);
       socket.off('CONVERSATION_DELETED', handleBroadcastUpdate);
     };
@@ -220,6 +257,7 @@ export const WhatsAppInbox: React.FC = () => {
         params: {
           view: activeView,
           search: searchQuery || undefined,
+          company_name: isSuperadmin && selectedCompanyFilter !== 'all' ? selectedCompanyFilter : undefined,
         },
       });
       if (res.data.success) {
@@ -367,24 +405,58 @@ export const WhatsAppInbox: React.FC = () => {
     if (e) e.preventDefault();
     if (!selectedConv || !inputText.trim()) return;
 
+    const sendingContent = inputText.trim();
+    const tempId = `temp-${Date.now()}`;
+
+    if (!isPrivateNote) {
+      // Optimistic message with status 'sending' (clock icon)
+      const optimisticMsg: ChatMessage = {
+        id: tempId,
+        conversation_id: selectedConv.id,
+        direction: 'outbound',
+        sender_type: 'agent',
+        sender_id: user?.id,
+        sender_name: user?.full_name || 'Agent',
+        message_type: 'text',
+        content: sendingContent,
+        status: 'sending' as any,
+        created_at: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, optimisticMsg]);
+    }
+
+    setInputText('');
     setIsSending(true);
+
     try {
       if (isPrivateNote) {
         // Send Internal Private Note
         await axios.post(`/api/inbox/conversations/${selectedConv.id}/notes`, {
-          content: inputText.trim(),
+          content: sendingContent,
         });
+        loadConversationDetails(selectedConv.id, false);
       } else {
         // Send Outbound WhatsApp Message
-        await axios.post(`/api/inbox/conversations/${selectedConv.id}/messages`, {
-          content: inputText.trim(),
+        const res = await axios.post(`/api/inbox/conversations/${selectedConv.id}/messages`, {
+          content: sendingContent,
           message_type: 'text',
           gateway_id: activeWhatsAppGw?.id || undefined,
         });
+
+        if (res.data.success && res.data.message) {
+          const confirmedMsg = res.data.message;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === tempId ? confirmedMsg : m))
+          );
+        } else {
+          loadConversationDetails(selectedConv.id, false);
+        }
       }
-      setInputText('');
-      loadConversationDetails(selectedConv.id, false);
     } catch (err: any) {
+      // Mark optimistic message as failed if error occurs
+      setMessages((prev) =>
+        prev.map((m) => (m.id === tempId ? { ...m, status: 'failed' } : m))
+      );
       if (err.response?.data?.requires_template) {
         alert('⚠️ 24-Hour WhatsApp Session has expired! Meta policy requires an approved WhatsApp Template message to contact this user.');
         setShowTemplateModal(true);
@@ -519,7 +591,7 @@ export const WhatsAppInbox: React.FC = () => {
         </div>
 
         {/* Search Bar */}
-        <div className="p-3 border-b border-slate-200 dark:border-slate-800/80">
+        <div className="p-3 border-b border-slate-200 dark:border-slate-800/80 space-y-2">
           <div className="relative">
             <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
             <input
@@ -530,6 +602,23 @@ export const WhatsAppInbox: React.FC = () => {
               className="w-full bg-slate-100 dark:bg-[#0f172a] border border-slate-200 dark:border-slate-800 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-500"
             />
           </div>
+
+          {/* Superadmin Company Scope Filter */}
+          {isSuperadmin && (
+            <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-[#0f172a] px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800">
+              <Building2 size={13} className="text-blue-500 shrink-0" />
+              <select
+                value={selectedCompanyFilter}
+                onChange={(e) => setSelectedCompanyFilter(e.target.value)}
+                className="w-full bg-transparent text-[11px] font-semibold text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer"
+              >
+                <option value="all" className="dark:bg-[#090e1c]">🏢 All Companies (Global Inbox)</option>
+                {companiesList.map((c) => (
+                  <option key={c} value={c} className="dark:bg-[#090e1c]">🏢 {c}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* View Navigation Pills */}
@@ -731,6 +820,12 @@ export const WhatsAppInbox: React.FC = () => {
                         <Bot size={9} /> Bot
                       </span>
                     )}
+                    {isSuperadmin && conv.company_name && (
+                      <span className="px-1.5 py-0.5 bg-blue-500/10 text-blue-500 dark:text-blue-400 border border-blue-500/20 rounded font-semibold text-[9px] flex items-center gap-0.5 truncate max-w-[120px]" title={conv.company_name}>
+                        <Building2 size={9} className="shrink-0" />
+                        <span className="truncate">{conv.company_name}</span>
+                      </span>
+                    )}
                   </div>
                 </div>
               );
@@ -926,15 +1021,29 @@ export const WhatsAppInbox: React.FC = () => {
                     {/* Message Body */}
                     <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
 
-                    {/* Delivery Status Tick Marks */}
+                    {/* Delivery Status Tick Marks (WhatsApp Protocol) */}
                     {isOutbound && (
                       <div className="flex justify-end items-center gap-1 text-[10px] opacity-80 pt-1">
-                        {msg.status === 'read' ? (
-                          <span title="Read by recipient"><CheckCheck size={14} className="text-cyan-300" /></span>
+                        {(msg.status as any) === 'sending' || (msg.status as any) === 'queued' ? (
+                          <span title="Sending..." className="flex items-center gap-0.5 text-slate-300">
+                            <Clock size={12} className="animate-pulse" />
+                          </span>
+                        ) : msg.status === 'read' ? (
+                          <span title="Read by recipient" className="flex items-center gap-0.5">
+                            <CheckCheck size={14} className="text-emerald-400" />
+                          </span>
                         ) : msg.status === 'delivered' ? (
-                          <span title="Delivered to WhatsApp"><CheckCheck size={14} className="text-slate-300" /></span>
+                          <span title="Delivered to recipient" className="flex items-center gap-0.5">
+                            <CheckCheck size={14} className="text-slate-300" />
+                          </span>
+                        ) : msg.status === 'failed' ? (
+                          <span title="Failed to send" className="flex items-center gap-0.5 text-rose-400">
+                            <AlertCircle size={13} />
+                          </span>
                         ) : (
-                          <span title="Sent"><Check size={14} className="text-slate-300" /></span>
+                          <span title="Sent" className="flex items-center gap-0.5">
+                            <Check size={14} className="text-slate-300" />
+                          </span>
                         )}
                       </div>
                     )}

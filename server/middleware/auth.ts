@@ -54,7 +54,7 @@ export const authenticateToken = async (
     req.user = userRes.rows[0];
     next();
   } catch (err) {
-    res.status(401).json({ success: false, message: 'Session expired after 15 minutes. Please sign in again.' });
+    res.status(401).json({ success: false, message: 'Invalid or expired session. Please sign in again.' });
   }
 };
 

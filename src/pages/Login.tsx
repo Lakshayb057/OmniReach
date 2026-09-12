@@ -19,9 +19,9 @@ export const Login: React.FC = () => {
     const params = new URLSearchParams(location.search);
     const reason = params.get('reason');
     if (reason === 'inactivity') {
-      setSessionNotice('Session logged out due to 15 minutes of inactivity.');
+      setSessionNotice('Session logged out due to inactivity.');
     } else if (reason === 'expired') {
-      setSessionNotice('Your 15-minute secure session has expired. Please sign in again.');
+      setSessionNotice('Your session has expired. Please sign in again.');
     }
   }, [location.search]);
 

@@ -4,6 +4,7 @@ import { sendWhatsAppMessage } from './whatsappService';
 import { normalizePhone } from './leadsMatcher';
 import { advanceJourneyOnUserInput } from './journeyEngine';
 import { isOptOutMessage, isOptInMessage } from './antiBanService';
+import { logMessagingEvent } from '../utils/logger';
 
 export interface OutboundMessageOptions {
   content: string;
@@ -47,7 +48,7 @@ export function getSessionRemainingMs(sessionExpiresAt: Date | string | null | u
 }
 
 /**
- * Find or create a WhatsApp conversation thread for a phone number
+ * Find or create a WhatsApp conversation thread strictly isolated per company
  */
 export async function findOrCreateConversation(
   phone: string,
@@ -58,14 +59,14 @@ export async function findOrCreateConversation(
 ) {
   const cleanPhone = normalizePhone(phone) || phone;
 
-  // 1. Check existing conversation
+  // 1. Check existing conversation strictly matching this company
   let convRes = await query(
     `SELECT c.*, u.full_name as assigned_agent_name, ml.urn, ml.fmcb_id, ml.email, ml.city, ml.pan_no
      FROM conversations c
      LEFT JOIN users u ON c.assigned_agent_id = u.id
      LEFT JOIN campaign_master_leads ml ON c.master_lead_id = ml.id
-     WHERE c.phone = $1 AND (c.company_name = $2 OR c.company_name = 'OmniReach Global')
-     ORDER BY (c.company_name = $2) DESC, c.updated_at DESC LIMIT 1`,
+     WHERE c.phone = $1 AND LOWER(TRIM(c.company_name)) = LOWER(TRIM($2))
+     ORDER BY c.updated_at DESC LIMIT 1`,
     [cleanPhone, companyName]
   );
 
@@ -77,7 +78,7 @@ export async function findOrCreateConversation(
     return convRes.rows[0];
   }
 
-  // 2. Lookup in Master Leads Repository if masterLeadId not provided
+  // 2. Lookup in Master Leads Repository scoped strictly to this company
   let leadId = masterLeadId;
   let resolvedName = contactName || 'WhatsApp Customer';
 
@@ -85,9 +86,11 @@ export async function findOrCreateConversation(
     const leadRes = await query(
       `SELECT id, full_name, email, city, pan_no, urn, fmcb_id 
        FROM campaign_master_leads 
-       WHERE phone = $1 OR phone LIKE $2
+       WHERE (phone = $1 OR phone LIKE $2)
+         AND (LOWER(TRIM(company_name)) = LOWER(TRIM($3)) OR company_name = 'OmniReach Global' OR company_name IS NULL)
+       ORDER BY (LOWER(TRIM(company_name)) = LOWER(TRIM($3))) DESC
        LIMIT 1`,
-      [cleanPhone, `%${cleanPhone.slice(-10)}`]
+      [cleanPhone, `%${cleanPhone.slice(-10)}`, companyName]
     );
     if (leadRes.rows.length > 0) {
       leadId = leadRes.rows[0].id;
@@ -95,7 +98,7 @@ export async function findOrCreateConversation(
     }
   }
 
-  // 3. Insert new conversation with 24-hour window
+  // 3. Insert new conversation with 24-hour window strictly for this company
   const insertRes = await query(
     `INSERT INTO conversations (company_name, master_lead_id, phone, contact_name, status, priority, session_expires_at, unread_count, last_gateway_id)
      VALUES ($1, $2, $3, $4, 'open', 'medium', CURRENT_TIMESTAMP + INTERVAL '24 hours', 0, $5)
@@ -107,13 +110,93 @@ export async function findOrCreateConversation(
 }
 
 /**
+ * Update message delivery / read status receipt without downgrading
+ */
+export async function updateMessageReceiptStatus(
+  whatsappMessageId: string,
+  newStatus: 'sent' | 'delivered' | 'read' | 'failed'
+) {
+  if (!whatsappMessageId) return null;
+
+  const rank: Record<string, number> = {
+    failed: 0,
+    queued: 1,
+    sent: 2,
+    delivered: 3,
+    read: 4,
+  };
+
+  const currentRes = await query(
+    `SELECT cm.*, c.company_name, c.phone 
+     FROM chat_messages cm
+     JOIN conversations c ON cm.conversation_id = c.id
+     WHERE cm.whatsapp_message_id = $1
+     LIMIT 1`,
+    [whatsappMessageId]
+  );
+
+  if (currentRes.rows.length === 0) return null;
+
+  const currentMsg = currentRes.rows[0];
+  const currentRank = rank[currentMsg.status] || 0;
+  const targetRank = rank[newStatus] || 0;
+
+  // Only advance status (e.g. sent -> delivered -> read). Do not downgrade read -> delivered.
+  if (targetRank <= currentRank && currentMsg.status !== 'queued') {
+    return currentMsg;
+  }
+
+  const updateRes = await query(
+    `UPDATE chat_messages 
+     SET status = $1 
+     WHERE id = $2 
+     RETURNING *`,
+    [newStatus, currentMsg.id]
+  );
+
+  const updatedMsg = updateRes.rows[0];
+
+  // Broadcast live status update to all connected inbox clients
+  emitBroadcastUpdate({
+    type: 'INBOX_MESSAGE_STATUS',
+    conversation_id: updatedMsg.conversation_id,
+    message_id: updatedMsg.id,
+    whatsapp_message_id: whatsappMessageId,
+    status: newStatus,
+    company_name: currentMsg.company_name,
+  });
+
+  logMessagingEvent({
+    action: 'STATUS_CHANGE',
+    phone: currentMsg.phone,
+    companyName: currentMsg.company_name,
+    status: newStatus,
+    messageId: whatsappMessageId,
+  });
+
+  return updatedMsg;
+}
+
+/**
  * Ingest an incoming message from a customer (via Webhook, Simulator, or live API)
  */
 export async function saveInboundMessage(payload: InboundMessagePayload) {
   const cleanPhone = normalizePhone(payload.phone) || payload.phone;
-  const company = payload.company_name || 'OmniReach Global';
+  let company = payload.company_name;
 
-  // 1. Find or create conversation
+  // Enforce company from gateway if gateway_id is provided
+  if (payload.gateway_id) {
+    const gwRes = await query('SELECT company_name FROM gateways_config WHERE id = $1', [payload.gateway_id]);
+    if (gwRes.rows.length > 0 && gwRes.rows[0].company_name) {
+      company = gwRes.rows[0].company_name;
+    }
+  }
+
+  if (!company) {
+    company = 'OmniReach Global';
+  }
+
+  // 1. Find or create conversation strictly for this company
   const conv = await findOrCreateConversation(cleanPhone, payload.contact_name, company, undefined, payload.gateway_id);
 
   const wamid = payload.whatsapp_message_id || `wamid_in_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -129,6 +212,14 @@ export async function saveInboundMessage(payload: InboundMessagePayload) {
   );
 
   const newMsg = msgRes.rows[0];
+
+  logMessagingEvent({
+    action: 'INBOUND_RECEIVED',
+    phone: cleanPhone,
+    companyName: company,
+    messageId: wamid,
+    textSnippet: content,
+  });
 
   // 3. Anti-Ban Opt-out / Opt-in detection
   const isStop = isOptOutMessage(content);
@@ -382,6 +473,17 @@ export async function sendOutboundMessage(
     type: 'CONVERSATION_UPDATED',
     conversation_id: conv.id,
     company_name: conv.company_name,
+  });
+
+  logMessagingEvent({
+    action: 'OUTBOUND_SENT',
+    phone: conv.phone,
+    companyName: conv.company_name,
+    gatewayName: waGw?.name || waType,
+    status: newMsg.status,
+    messageId: wamid,
+    user: agentUser as any,
+    textSnippet: options.content,
   });
 
   return newMsg;

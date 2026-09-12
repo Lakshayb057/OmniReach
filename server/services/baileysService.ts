@@ -15,8 +15,9 @@ import fs from 'fs';
 import axios from 'axios';
 import { Server as SocketIOServer } from 'socket.io';
 import { query } from '../config/db';
-import { saveInboundMessage } from './inboxService';
+import { saveInboundMessage, updateMessageReceiptStatus } from './inboxService';
 import { normalizePhone } from './leadsMatcher';
+import { logGatewayEvent } from '../utils/logger';
 import {
   parseSpintax,
   applyPolymorphicVariation,
@@ -479,6 +480,59 @@ export async function initBaileysSession(
           }
         } catch (inboundErr: any) {
           console.error(`❌ Error ingesting inbound Baileys message from ${cleanPhone}:`, inboundErr.message);
+        }
+      }
+    });
+
+    // Handle outbound message status updates (sent, delivered, read ticks)
+    sock.ev.on('messages.update', async (updates) => {
+      for (const { key, update } of updates) {
+        const wamid = key.id;
+        if (!wamid) continue;
+
+        let targetStatus: 'sent' | 'delivered' | 'read' | 'failed' | null = null;
+        if (update.status !== undefined && update.status !== null) {
+          // Status enum: 0 = ERROR, 1 = PENDING, 2 = SERVER_ACK, 3 = DELIVERY_ACK, 4 = READ, 5 = PLAYED
+          if (update.status === 2) {
+            targetStatus = 'sent';
+          } else if (update.status === 3) {
+            targetStatus = 'delivered';
+          } else if (update.status === 4 || update.status === 5) {
+            targetStatus = 'read';
+          } else if (update.status === 0) {
+            targetStatus = 'failed';
+          }
+        }
+
+        if (targetStatus) {
+          try {
+            await updateMessageReceiptStatus(wamid, targetStatus);
+          } catch (statusErr: any) {
+            console.warn(`[Baileys] Error updating message status (${wamid}):`, statusErr.message);
+          }
+        }
+      }
+    });
+
+    // Handle message receipts for read timestamps
+    sock.ev.on('message-receipt.update', async (receipts) => {
+      for (const receipt of receipts) {
+        const wamid = receipt.key.id;
+        if (!wamid) continue;
+
+        let targetStatus: 'sent' | 'delivered' | 'read' | null = null;
+        if (receipt.receipt?.readTimestamp) {
+          targetStatus = 'read';
+        } else if (receipt.receipt?.receiptTimestamp) {
+          targetStatus = 'delivered';
+        }
+
+        if (targetStatus) {
+          try {
+            await updateMessageReceiptStatus(wamid, targetStatus);
+          } catch (receiptErr: any) {
+            console.warn(`[Baileys] Error updating receipt status (${wamid}):`, receiptErr.message);
+          }
         }
       }
     });

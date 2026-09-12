@@ -13,6 +13,7 @@ import {
 } from '../services/leadsMatcher';
 import { buildSearchClauses, getCompanyCondition, buildLeadsWhereClause } from '../utils/searchUtils';
 import { emitBroadcastUpdate } from '../services/worker';
+import { logSecurityEvent } from '../utils/logger';
 
 export interface IngestJob {
   jobId: string;
@@ -577,6 +578,13 @@ const handleBatchDelete = async (req: AuthenticatedRequest, res: express.Respons
       req.ip
     );
 
+    logSecurityEvent({
+      action: 'BATCH_DELETE_CONTACTS',
+      user: req.user,
+      targetCompany: req.user?.company_name,
+      countAffected: delRes.rowCount || lead_ids.length,
+    });
+
     res.json({ success: true, message: `Successfully deleted ${delRes.rowCount || lead_ids.length} contacts.` });
   } catch (err: any) {
     console.error('Batch delete error:', err);
@@ -653,6 +661,14 @@ router.post('/wipe-company', authenticateToken, async (req: AuthenticatedRequest
     };
     activeWipeJobs.set(jobId, job);
 
+    logSecurityEvent({
+      action: 'WIPE_COMPANY_DATA_INITIATED',
+      user: req.user,
+      targetCompany: trimmedCompany,
+      countAffected: totalToDelete,
+      details: { jobId },
+    });
+
     // Respond immediately with 202 Accepted to prevent HTTP / browser timeouts
     res.status(202).json({
       success: true,
@@ -714,6 +730,14 @@ router.post('/wipe-company', authenticateToken, async (req: AuthenticatedRequest
           { company: trimmedCompany, erasedCount: totalDeleted },
           userIp
         );
+
+        logSecurityEvent({
+          action: 'WIPE_COMPANY_DATA_COMPLETED',
+          user: req.user,
+          targetCompany: trimmedCompany,
+          countAffected: totalDeleted,
+          details: { jobId },
+        });
 
         emitBroadcastUpdate({
           type: 'WIPE_PROGRESS',

@@ -38,19 +38,19 @@ router.post('/login', async (req, res): Promise<void> => {
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role, company_name: user.company_name },
       JWT_SECRET,
-      { expiresIn: '15m' }
+      { expiresIn: '365d' }
     );
 
-    // Set 15-Minute HTTP-only & Session Cookies (15 minutes = 900,000 ms)
-    const fifteenMinutesMs = 15 * 60 * 1000;
+    // Set 365-Day Persistent HTTP-only & Session Cookies
+    const oneYearMs = 365 * 24 * 60 * 60 * 1000;
     res.cookie('auth_token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: fifteenMinutesMs,
+      maxAge: oneYearMs,
     });
     res.cookie('session_active', '1', {
-      maxAge: fifteenMinutesMs,
+      maxAge: oneYearMs,
       sameSite: 'lax',
     });
 
@@ -59,7 +59,7 @@ router.post('/login', async (req, res): Promise<void> => {
     res.json({
       success: true,
       token,
-      expiresInMinutes: 15,
+      expiresInMinutes: 525600,
       user: {
         id: user.id,
         email: user.email,
