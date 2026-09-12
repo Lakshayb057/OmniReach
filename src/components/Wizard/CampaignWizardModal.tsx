@@ -251,8 +251,6 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
     }
   };
 
-  if (!isOpen) return null;
-
   const steps = [
     { id: 1, name: 'Campaign Info' },
     { id: 2, name: 'Channels & Gateways' },
@@ -264,8 +262,12 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
 
   // Listen to live ingestion progress from Socket.IO
   useEffect(() => {
-    if (lastEvent?.type === 'INGEST_PROGRESS' && lastEvent.data) {
-      const data = lastEvent.data;
+    if (!isOpen) return;
+    const evType = lastEvent?.data?.type || lastEvent?.type;
+    const evData = lastEvent?.data?.type ? lastEvent.data : (lastEvent?.data || lastEvent);
+
+    if (evType === 'INGEST_PROGRESS' && evData) {
+      const data = evData;
       if (!ingestJob || data.jobId === ingestJob.jobId) {
         setIngestJob((prev) => ({
           jobId: data.jobId,
@@ -293,11 +295,11 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
         }
       }
     }
-  }, [lastEvent, ingestJob]);
+  }, [isOpen, lastEvent, ingestJob]);
 
   // Polling fallback every 1.5s for background upload job
   useEffect(() => {
-    if (!ingestJob || ingestJob.status !== 'processing' || !ingestJob.jobId) return;
+    if (!isOpen || !ingestJob || ingestJob.status !== 'processing' || !ingestJob.jobId) return;
 
     const interval = setInterval(async () => {
       try {
@@ -337,7 +339,7 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
     }, 1500);
 
     return () => clearInterval(interval);
-  }, [ingestJob?.jobId, ingestJob?.status]);
+  }, [isOpen, ingestJob?.jobId, ingestJob?.status]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -471,6 +473,8 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
       setIsLoading(false);
     }
   };
+
+  if (!isOpen) return null;
 
   const activeWhatsAppTemplateObj = templates.find((t) => t.id === selectedWhatsAppTemplate);
   const activeEmailTemplateObj = templates.find((t) => t.id === selectedEmailTemplate);
