@@ -4,11 +4,13 @@ import makeWASocket, {
   WASocket,
   proto,
   Browsers,
+  AnyMessageContent,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import path from 'path';
 import fs from 'fs';
+import axios from 'axios';
 import { Server as SocketIOServer } from 'socket.io';
 import { query } from '../config/db';
 import { saveInboundMessage } from './inboxService';
@@ -543,6 +545,107 @@ export async function requestBaileysPairingCode(
   return code;
 }
 
+export interface ResolvedMedia {
+  buffer: Buffer;
+  mimetype: string;
+  isImage: boolean;
+  isDocument: boolean;
+  fileName?: string;
+}
+
+/**
+ * Downloads and prepares image/document media buffers from direct URLs
+ * or OpenGraph/Twitter card image tags on web article pages (e.g. Wikipedia).
+ */
+export async function resolveMediaBuffer(url?: string | null): Promise<ResolvedMedia | null> {
+  if (!url || typeof url !== 'string') return null;
+  const trimmedUrl = url.trim();
+  if (!trimmedUrl.startsWith('http://') && !trimmedUrl.startsWith('https://')) return null;
+
+  try {
+    const response = await axios.get(trimmedUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      timeout: 10000,
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+    });
+
+    const rawContentType = response.headers['content-type'];
+    const contentType = (Array.isArray(rawContentType) ? rawContentType[0] : String(rawContentType || '')).toLowerCase();
+
+    // 1. Direct Image
+    if (contentType.startsWith('image/')) {
+      return {
+        buffer: Buffer.from(response.data),
+        mimetype: contentType.split(';')[0],
+        isImage: true,
+        isDocument: false,
+      };
+    }
+
+    // 2. Direct PDF / Document
+    if (contentType.includes('application/pdf') || trimmedUrl.toLowerCase().endsWith('.pdf')) {
+      return {
+        buffer: Buffer.from(response.data),
+        mimetype: 'application/pdf',
+        isImage: false,
+        isDocument: true,
+        fileName: 'Document.pdf',
+      };
+    }
+
+    // 3. Web Page (HTML) -> Extract OpenGraph or Twitter Card image
+    if (contentType.includes('text/html')) {
+      const html = Buffer.from(response.data).toString('utf-8');
+      const ogMatch =
+        html.match(/<meta\s+[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
+        html.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i) ||
+        html.match(/<meta\s+[^>]*name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i) ||
+        html.match(/<meta\s+[^>]*content=["']([^"']+)["'][^>]*name=["']twitter:image["']/i);
+
+      if (ogMatch && ogMatch[1]) {
+        let extractedImageUrl = ogMatch[1].replace(/&amp;/g, '&');
+        if (extractedImageUrl.startsWith('//')) {
+          extractedImageUrl = 'https:' + extractedImageUrl;
+        } else if (extractedImageUrl.startsWith('/')) {
+          const parsedOrigin = new URL(trimmedUrl).origin;
+          extractedImageUrl = parsedOrigin + extractedImageUrl;
+        }
+
+        const imgResponse = await axios.get(extractedImageUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+          },
+          timeout: 10000,
+          responseType: 'arraybuffer',
+        });
+
+        const rawImgContentType = imgResponse.headers['content-type'];
+        const imgContentTypeStr = Array.isArray(rawImgContentType) ? rawImgContentType[0] : String(rawImgContentType || 'image/jpeg');
+        const imgContentType = imgContentTypeStr.split(';')[0];
+        return {
+          buffer: Buffer.from(imgResponse.data),
+          mimetype: imgContentType.startsWith('image/') ? imgContentType : 'image/jpeg',
+          isImage: true,
+          isDocument: false,
+        };
+      }
+    }
+
+    return null;
+  } catch (err: any) {
+    console.warn(`[Baileys Media Resolver] Failed to resolve media from "${url}":`, err.message);
+    return null;
+  }
+}
+
 /**
  * Send an outbound WhatsApp message via Baileys Web Socket
  */
@@ -552,9 +655,16 @@ export async function sendBaileysMessage(
   messageData: {
     text?: string;
     body_content?: string;
+    header_type?: string;
     header_content?: string;
     footer_content?: string;
     media_url?: string;
+    buttons_json?: Array<{
+      type?: string;
+      text: string;
+      url?: string;
+      phone_number?: string;
+    }>;
   },
   antiBanOverrides?: Partial<AntiBanSettings>
 ): Promise<{ success: boolean; messageId?: string; error?: string; status: 'delivered' | 'failed' | 'suppressed' }> {
@@ -620,11 +730,40 @@ export async function sendBaileysMessage(
 
   try {
     let fullText = messageData.body_content || messageData.text || '';
-    if (messageData.header_content) {
-      fullText = `*${messageData.header_content}*\n\n${fullText}`;
+
+    // Only prepend header_content as text if header_type is TEXT (or header_type is not IMAGE/DOCUMENT)
+    const isImageHeader = messageData.header_type === 'IMAGE';
+    const isDocHeader = messageData.header_type === 'DOCUMENT';
+
+    if (messageData.header_content && !isImageHeader && !isDocHeader) {
+      fullText = `*${messageData.header_content.trim()}*\n\n${fullText}`;
     }
+
+    // Format interactive action buttons / call-to-action links
+    if (messageData.buttons_json && Array.isArray(messageData.buttons_json) && messageData.buttons_json.length > 0) {
+      const buttonLines: string[] = [];
+      for (const btn of messageData.buttons_json) {
+        if (!btn || !btn.text) continue;
+        const btnText = btn.text.trim();
+        if (btn.type === 'URL' && btn.url) {
+          buttonLines.push(`🔘 *${btnText}*: ${btn.url.trim()}`);
+        } else if (btn.type === 'PHONE_NUMBER' && btn.phone_number) {
+          buttonLines.push(`📞 *${btnText}*: ${btn.phone_number.trim()}`);
+        } else if (btn.type === 'QUICK_REPLY') {
+          buttonLines.push(`💬 *Reply*: "${btnText}"`);
+        } else if (btn.url) {
+          buttonLines.push(`🔘 *${btnText}*: ${btn.url.trim()}`);
+        } else {
+          buttonLines.push(`🔘 *${btnText}*`);
+        }
+      }
+      if (buttonLines.length > 0) {
+        fullText = `${fullText}\n\n──────────────\n${buttonLines.join('\n')}`;
+      }
+    }
+
     if (messageData.footer_content) {
-      fullText = `${fullText}\n\n_${messageData.footer_content}_`;
+      fullText = `${fullText}\n\n_${messageData.footer_content.trim()}_`;
     }
 
     // 2. SPINTAX EXPANSION: Resolve {Hi|Hello|Hey} expressions
@@ -646,9 +785,47 @@ export async function sendBaileysMessage(
       await simulateHumanPresence(session.socket, jid, fullText.length);
     }
 
-    const result = await session.socket.sendMessage(jid, {
-      text: fullText,
-    });
+    // 6. RESOLVE MEDIA (Image / Document) IF PRESENT
+    const rawMediaUrl =
+      messageData.media_url ||
+      (isImageHeader || isDocHeader ? messageData.header_content : undefined);
+
+    let result: proto.WebMessageInfo | undefined;
+
+    if (rawMediaUrl) {
+      const resolvedMedia = await resolveMediaBuffer(rawMediaUrl);
+      if (resolvedMedia) {
+        if (resolvedMedia.isImage || isImageHeader) {
+          result = await session.socket.sendMessage(jid, {
+            image: resolvedMedia.buffer,
+            caption: fullText,
+            mimetype: resolvedMedia.mimetype,
+          });
+        } else if (resolvedMedia.isDocument || isDocHeader) {
+          result = await session.socket.sendMessage(jid, {
+            document: resolvedMedia.buffer,
+            caption: fullText,
+            mimetype: resolvedMedia.mimetype,
+            fileName: resolvedMedia.fileName || 'Attachment.pdf',
+          });
+        }
+      } else {
+        console.warn(`[Baileys Dispatch] Could not download media buffer from "${rawMediaUrl}", falling back to text dispatch`);
+        // If image download failed, include the media link so recipient still receives the resource
+        if (isImageHeader && messageData.header_content && !fullText.includes(messageData.header_content)) {
+          fullText = `🖼️ *Media*: ${messageData.header_content}\n\n${fullText}`;
+        }
+        result = await session.socket.sendMessage(jid, {
+          text: fullText,
+        });
+      }
+    }
+
+    if (!result) {
+      result = await session.socket.sendMessage(jid, {
+        text: fullText,
+      });
+    }
 
     const messageId = result?.key?.id || `baileys_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 

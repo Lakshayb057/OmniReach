@@ -71,11 +71,26 @@ export const WhatsAppPreview: React.FC<WhatsAppPreviewProps> = ({
             </div>
           )}
           {headerType === 'IMAGE' && (
-            <div className="h-32 bg-[#182229] flex items-center justify-center overflow-hidden border-b border-slate-700/50">
+            <div className="min-h-32 max-h-48 bg-[#182229] flex items-center justify-center overflow-hidden border-b border-slate-700/50 relative">
               {headerContent ? (
-                <img src={headerContent} alt="Header" className="w-full h-full object-cover" />
+                <img
+                  src={headerContent}
+                  alt="Header Preview"
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    target.style.display = 'none';
+                    const parent = target.parentElement;
+                    if (parent && !parent.querySelector('.img-fallback-banner')) {
+                      const fb = document.createElement('div');
+                      fb.className = 'img-fallback-banner p-3 text-center text-slate-300 text-xs flex flex-col items-center gap-1';
+                      fb.innerHTML = `<span class="text-2xl">🖼️</span><span class="font-bold text-[11px] text-cyan-300">Live Header Image Attached</span><span class="text-[9px] text-slate-400 font-mono truncate max-w-[240px]">${headerContent}</span>`;
+                      parent.appendChild(fb);
+                    }
+                  }}
+                />
               ) : (
-                <div className="text-center text-slate-400 text-xs font-medium">
+                <div className="text-center text-slate-400 text-xs font-medium py-6">
                   🖼️ Image Header Attached
                 </div>
               )}
@@ -116,11 +131,23 @@ export const WhatsAppPreview: React.FC<WhatsAppPreviewProps> = ({
               {buttons.map((btn, idx) => (
                 <div
                   key={idx}
-                  className="py-2 px-3 text-center text-xs font-bold text-[#00a884] hover:bg-slate-700/40 cursor-pointer flex items-center justify-center gap-1.5 transition-colors"
+                  className="py-2.5 px-3 text-center text-xs font-bold text-[#00a884] hover:bg-slate-700/40 cursor-pointer flex items-center justify-center gap-1.5 transition-colors"
+                  title={btn.url || btn.phone_number || btn.text}
                 >
-                  {btn.type === 'URL' && <ExternalLink size={13} />}
-                  {btn.type === 'QUICK_REPLY' && <MessageSquare size={13} />}
-                  <span>{btn.text}</span>
+                  {btn.type === 'URL' && <ExternalLink size={13} className="text-cyan-400 shrink-0" />}
+                  {btn.type === 'PHONE_NUMBER' && <Phone size={13} className="text-emerald-400 shrink-0" />}
+                  {btn.type === 'QUICK_REPLY' && <MessageSquare size={13} className="text-amber-400 shrink-0" />}
+                  <span className="truncate">{btn.text || 'Button'}</span>
+                  {btn.type === 'URL' && btn.url && (
+                    <span className="text-[10px] text-slate-400 font-normal font-mono truncate max-w-[130px]">
+                      ({btn.url.replace(/^https?:\/\//, '')})
+                    </span>
+                  )}
+                  {btn.type === 'PHONE_NUMBER' && btn.phone_number && (
+                    <span className="text-[10px] text-slate-400 font-normal font-mono">
+                      ({btn.phone_number})
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

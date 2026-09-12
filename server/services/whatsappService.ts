@@ -62,8 +62,14 @@ export async function sendWhatsAppMessage(
     try {
       const baileysResult = await sendBaileysMessage(gatewayId, recipientPhone, {
         body_content: resolvedBody,
+        header_type: template.header_type,
         header_content: resolvedHeader,
         footer_content: template.footer_content,
+        media_url:
+          template.header_type === 'IMAGE' || template.header_type === 'DOCUMENT'
+            ? resolvedHeader
+            : undefined,
+        buttons_json: template.buttons_json,
       });
 
       if (baileysResult.success) {
@@ -109,18 +115,33 @@ export async function sendWhatsAppMessage(
       if (template.meta_template_name) {
         // Meta Template Dispatch
         payload.type = 'template';
+        const components: any[] = [];
+
+        // If template has an image header and resolvedHeader is present
+        if (template.header_type === 'IMAGE' && resolvedHeader) {
+          components.push({
+            type: 'header',
+            parameters: [
+              {
+                type: 'image',
+                image: { link: resolvedHeader },
+              },
+            ],
+          });
+        }
+
+        components.push({
+          type: 'body',
+          parameters: [
+            { type: 'text', text: lead.full_name || 'Customer' },
+            { type: 'text', text: lead.urn || lead.fmcb_id },
+          ],
+        });
+
         payload.template = {
           name: template.meta_template_name,
           language: { code: template.meta_language || 'en_US' },
-          components: [
-            {
-              type: 'body',
-              parameters: [
-                { type: 'text', text: lead.full_name || 'Customer' },
-                { type: 'text', text: lead.urn || lead.fmcb_id },
-              ],
-            },
-          ],
+          components,
         };
       } else {
         // Freeform message

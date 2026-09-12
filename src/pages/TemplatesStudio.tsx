@@ -19,6 +19,10 @@ import {
   Radio,
   Send,
   Zap,
+  Edit3,
+  Phone,
+  MessageSquare,
+  Link2,
 } from 'lucide-react';
 import { WhatsAppPreview } from '../components/Previews/WhatsAppPreview';
 import { EmailPreview } from '../components/Previews/EmailPreview';
@@ -44,8 +48,9 @@ export const TemplatesStudio: React.FC = () => {
   const [syncingTemplateId, setSyncingTemplateId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
 
-  // New Template Form State
+  // New/Edit Template Form State
   const [name, setName] = useState('');
   const [targetCompany, setTargetCompany] = useState(isSuperadmin ? 'OmniReach Global' : (user?.company_name || 'Acme Enterprise'));
   const [channel, setChannel] = useState<'whatsapp' | 'email'>('whatsapp');
@@ -57,7 +62,7 @@ export const TemplatesStudio: React.FC = () => {
   const [footerContent, setFooterContent] = useState('');
   const [emailSubject, setEmailSubject] = useState('');
   const [emailHtml, setEmailHtml] = useState('');
-  const [buttons, setButtons] = useState<any[]>([]);
+  const [buttons, setButtons] = useState<Array<{ type: string; text: string; url?: string; phone_number?: string }>>([]);
 
   useEffect(() => {
     localStorage.setItem('templates_channel_tab', activeChannel);
@@ -181,28 +186,57 @@ export const TemplatesStudio: React.FC = () => {
         buttons_json: channel === 'whatsapp' ? buttons : [],
       };
 
-      const res = await axios.post('/api/templates', payload);
+      let res;
+      if (editingTemplateId) {
+        res = await axios.put(`/api/templates/${editingTemplateId}`, payload);
+      } else {
+        res = await axios.post('/api/templates', payload);
+      }
+
       if (res.data.success) {
         confetti({ particleCount: 70, spread: 60, origin: { y: 0.6 } });
         setShowCreateModal(false);
         setSyncFeedback(
-          res.data.message ||
-            (channel === 'whatsapp'
-              ? 'Template created and submitted to Meta WhatsApp Manager in real-time!'
-              : 'Email template created and registered successfully!')
+          editingTemplateId
+            ? 'Template updated successfully!'
+            : res.data.message ||
+              (channel === 'whatsapp'
+                ? 'Template created and submitted to Meta WhatsApp Manager in real-time!'
+                : 'Email template created and registered successfully!')
         );
+        if (res.data.template) {
+          setSelectedTemplate(res.data.template);
+        }
         resetForm();
         fetchTemplates();
         setTimeout(() => setSyncFeedback(null), 5000);
       }
     } catch (err: any) {
-      alert(err.response?.data?.message || 'Failed to create template.');
+      alert(err.response?.data?.message || (editingTemplateId ? 'Failed to update template.' : 'Failed to create template.'));
     } finally {
       setIsCreating(false);
     }
   };
 
+  const handleEditTemplate = (tmpl: any) => {
+    setEditingTemplateId(tmpl.id);
+    setName(tmpl.name);
+    setChannel(tmpl.channel || 'whatsapp');
+    setCategory(tmpl.category || 'MARKETING');
+    setMetaLanguage(tmpl.meta_language || 'en_US');
+    setHeaderType(tmpl.header_type || 'NONE');
+    setHeaderContent(tmpl.header_content || '');
+    setBodyContent(tmpl.body_content || '');
+    setFooterContent(tmpl.footer_content || '');
+    setEmailSubject(tmpl.email_subject || '');
+    setEmailHtml(tmpl.email_html || '');
+    setButtons(Array.isArray(tmpl.buttons_json) ? tmpl.buttons_json : []);
+    setTargetCompany(tmpl.company_name || 'OmniReach Global');
+    setShowCreateModal(true);
+  };
+
   const resetForm = () => {
+    setEditingTemplateId(null);
     setName('');
     setBodyContent('');
     setHeaderContent('');
@@ -215,7 +249,17 @@ export const TemplatesStudio: React.FC = () => {
   };
 
   const handleAddButton = () => {
-    setButtons([...buttons, { type: 'URL', text: 'Claim Offer 💳', url: 'https://omnireach.io/apply' }]);
+    if (buttons.length >= 3) {
+      alert('WhatsApp supports a maximum of 3 action buttons per template.');
+      return;
+    }
+    const presets = [
+      { type: 'URL', text: 'Claim Offer 💳', url: 'https://omnireach.io/apply' },
+      { type: 'PHONE_NUMBER', text: 'Call Us 📞', phone_number: '+919876543210' },
+      { type: 'QUICK_REPLY', text: 'Interested 👍' },
+    ];
+    const nextBtn = presets[buttons.length] || { type: 'URL', text: 'Visit Website 🌐', url: 'https://' };
+    setButtons([...buttons, nextBtn]);
   };
 
   const insertVariableToken = (token: string) => {
@@ -398,6 +442,17 @@ export const TemplatesStudio: React.FC = () => {
                           <span>{syncingTemplateId === t.id ? 'Checking...' : '⚡ Check Live Status'}</span>
                         </button>
                       )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEditTemplate(t);
+                        }}
+                        className="text-amber-400 hover:text-amber-300 flex items-center gap-1 font-bold cursor-pointer"
+                        title="Edit Template"
+                      >
+                        <Edit3 size={11} />
+                        <span>Edit</span>
+                      </button>
                       {isSuperadmin && (
                         <button
                           onClick={(e) => {
@@ -460,6 +515,14 @@ export const TemplatesStudio: React.FC = () => {
                       </button>
                     </>
                   )}
+                  <button
+                    onClick={() => handleEditTemplate(selectedTemplate)}
+                    className="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                    title="Edit Template Properties"
+                  >
+                    <Edit3 size={11} />
+                    <span>✏️ Edit</span>
+                  </button>
                   <div className="text-cyan-400 font-mono text-[11px]">
                     Meta ID: {selectedTemplate.meta_template_name || selectedTemplate.name}
                   </div>
@@ -498,9 +561,11 @@ export const TemplatesStudio: React.FC = () => {
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Sparkles size={16} className="text-cyan-400" />
-                  Meta WhatsApp & Email Template Designer
+                  {editingTemplateId ? 'Edit Campaign Template' : 'Meta WhatsApp & Email Template Designer'}
                 </h3>
-                <p className="text-xs text-slate-400">Direct integration with Meta WhatsApp Cloud API</p>
+                <p className="text-xs text-slate-400">
+                  {editingTemplateId ? `Updating template parameters & action buttons` : 'Direct integration with Meta WhatsApp Cloud API & Baileys'}
+                </p>
               </div>
               <button
                 onClick={() => setShowCreateModal(false)}
@@ -638,15 +703,34 @@ export const TemplatesStudio: React.FC = () => {
                   {headerType !== 'NONE' && (
                     <div>
                       <label className="text-[11px] font-semibold text-slate-300 block mb-1">
-                        {headerType === 'TEXT' ? 'Header Text' : 'Media Sample URL'}
+                        {headerType === 'TEXT'
+                          ? 'Header Text *'
+                          : headerType === 'IMAGE'
+                          ? 'Header Image URL (Direct image or web page link) *'
+                          : 'Document Sample URL (PDF) *'}
                       </label>
                       <input
                         type="text"
-                        placeholder={headerType === 'TEXT' ? 'Exclusive Festive Offer' : 'https://example.com/banner.jpg'}
+                        required
+                        placeholder={
+                          headerType === 'TEXT'
+                            ? 'Exclusive Festive Offer'
+                            : headerType === 'IMAGE'
+                            ? 'https://example.com/banner.jpg or https://en.wikipedia.org/wiki/Credit_card'
+                            : 'https://example.com/sample.pdf'
+                        }
                         value={headerContent}
                         onChange={(e) => setHeaderContent(e.target.value)}
-                        className="w-full bg-[#070b14] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                        className="w-full bg-[#070b14] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 font-mono"
                       />
+                      {headerType === 'IMAGE' && (
+                        <p className="text-[10px] text-slate-400 mt-1.5 flex items-center gap-1.5 bg-cyan-950/30 p-2 rounded-lg border border-cyan-500/20">
+                          <span>🖼️</span>
+                          <span>
+                            <strong>Smart Media Dispatch</strong>: Direct images (.png, .jpg, .webp) and web article links (like Wikipedia) are automatically resolved and dispatched as full-resolution WhatsApp image attachments.
+                          </span>
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -705,38 +789,127 @@ export const TemplatesStudio: React.FC = () => {
                   </div>
 
                   <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="text-[11px] font-semibold text-slate-300">Interactive Action Buttons</label>
-                      <button
-                        type="button"
-                        onClick={handleAddButton}
-                        className="text-[11px] text-cyan-400 hover:text-cyan-300 font-bold"
-                      >
-                        + Add Button
-                      </button>
-                    </div>
-                    {buttons.map((b, idx) => (
-                      <div key={idx} className="flex gap-2 mb-2">
-                        <input
-                          type="text"
-                          placeholder="Button Label"
-                          value={b.text}
-                          onChange={(e) => {
-                            const copy = [...buttons];
-                            copy[idx].text = e.target.value;
-                            setButtons(copy);
-                          }}
-                          className="flex-1 bg-[#070b14] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-100"
-                        />
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <label className="text-[11px] font-semibold text-slate-300">
+                          Interactive Action Buttons ({buttons.length}/3)
+                        </label>
+                        <p className="text-[10px] text-slate-500">
+                          Attach website link buttons, call buttons, or quick replies for interactive engagement
+                        </p>
+                      </div>
+                      {buttons.length < 3 && (
                         <button
                           type="button"
-                          onClick={() => setButtons(buttons.filter((_, i) => i !== idx))}
-                          className="text-rose-400 hover:text-rose-300 px-2"
+                          onClick={handleAddButton}
+                          className="px-2.5 py-1 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
                         >
-                          ✕
+                          + Add Button
                         </button>
+                      )}
+                    </div>
+
+                    {buttons.length === 0 ? (
+                      <div className="p-3 bg-[#070b14] border border-dashed border-slate-800 rounded-xl text-center text-slate-500 text-xs">
+                        No buttons added. Click "+ Add Button" to configure interactive WhatsApp action buttons.
                       </div>
-                    ))}
+                    ) : (
+                      buttons.map((b, idx) => (
+                        <div key={idx} className="p-3 bg-[#070b14] border border-slate-800 rounded-xl mb-2.5 space-y-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 flex-1">
+                              <span className="text-[10px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded">
+                                Button #{idx + 1}
+                              </span>
+                              <select
+                                value={b.type || 'URL'}
+                                onChange={(e) => {
+                                  const copy = [...buttons];
+                                  copy[idx].type = e.target.value;
+                                  if (e.target.value === 'URL' && !copy[idx].url) copy[idx].url = 'https://';
+                                  if (e.target.value === 'PHONE_NUMBER' && !copy[idx].phone_number) copy[idx].phone_number = '+';
+                                  setButtons(copy);
+                                }}
+                                className="bg-[#0f172a] border border-slate-700/80 rounded-lg px-2.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-cyan-500 font-semibold"
+                              >
+                                <option value="URL">🔗 Visit Website (URL)</option>
+                                <option value="PHONE_NUMBER">📞 Call Phone Number</option>
+                                <option value="QUICK_REPLY">💬 Quick Reply Text</option>
+                              </select>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setButtons(buttons.filter((_, i) => i !== idx))}
+                              className="text-rose-400 hover:text-rose-300 p-1 rounded hover:bg-rose-500/10 text-xs cursor-pointer transition-colors"
+                              title="Remove Button"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-0.5 font-medium">Button Label / Text *</label>
+                              <input
+                                type="text"
+                                placeholder={b.type === 'PHONE_NUMBER' ? 'Call Support 📞' : b.type === 'QUICK_REPLY' ? 'Interested 👍' : 'Claim Offer 💳'}
+                                value={b.text}
+                                onChange={(e) => {
+                                  const copy = [...buttons];
+                                  copy[idx].text = e.target.value;
+                                  setButtons(copy);
+                                }}
+                                className="w-full bg-[#0f172a] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-cyan-500"
+                                required
+                              />
+                            </div>
+
+                            {b.type === 'URL' && (
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5 font-medium">Target Destination URL *</label>
+                                <input
+                                  type="url"
+                                  placeholder="https://example.com/apply"
+                                  value={b.url || ''}
+                                  onChange={(e) => {
+                                    const copy = [...buttons];
+                                    copy[idx].url = e.target.value;
+                                    setButtons(copy);
+                                  }}
+                                  className="w-full bg-[#0f172a] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 font-mono"
+                                  required
+                                />
+                              </div>
+                            )}
+
+                            {b.type === 'PHONE_NUMBER' && (
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-0.5 font-medium">Phone Number with Country Code *</label>
+                                <input
+                                  type="tel"
+                                  placeholder="+919876543210"
+                                  value={b.phone_number || ''}
+                                  onChange={(e) => {
+                                    const copy = [...buttons];
+                                    copy[idx].phone_number = e.target.value;
+                                    setButtons(copy);
+                                  }}
+                                  className="w-full bg-[#0f172a] border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-cyan-500 font-mono"
+                                  required
+                                />
+                              </div>
+                            )}
+
+                            {b.type === 'QUICK_REPLY' && (
+                              <div className="flex items-center text-[10px] text-slate-500 italic pt-2">
+                                Recipient clicking this button will send this exact text back in WhatsApp chat.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </>
               ) : (
@@ -835,12 +1008,18 @@ export const TemplatesStudio: React.FC = () => {
                   {isCreating ? (
                     <>
                       <RefreshCw size={14} className="animate-spin" />
-                      <span>{channel === 'whatsapp' ? 'Registering with Meta...' : 'Saving Email Template...'}</span>
+                      <span>{editingTemplateId ? 'Saving Changes...' : (channel === 'whatsapp' ? 'Registering with Meta...' : 'Saving Email Template...')}</span>
                     </>
                   ) : (
                     <>
                       {channel === 'whatsapp' ? <Send size={14} /> : <Mail size={14} />}
-                      <span>{channel === 'whatsapp' ? 'Register & Submit to Meta API' : 'Save & Register Email Template'}</span>
+                      <span>
+                        {editingTemplateId
+                          ? 'Save & Update Template'
+                          : channel === 'whatsapp'
+                          ? 'Register & Submit to Meta API'
+                          : 'Save & Register Email Template'}
+                      </span>
                     </>
                   )}
                 </button>
