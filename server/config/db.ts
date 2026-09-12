@@ -21,9 +21,12 @@ export const pool = new Pool(
     ? {
         connectionString,
         ssl: requiresSsl ? { rejectUnauthorized: false } : false,
-        max: 20,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
+        max: process.env.DB_POOL_MAX ? parseInt(process.env.DB_POOL_MAX, 10) : 15,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 5000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
+        statement_timeout: 45000,
       }
     : {
         host: process.env.DB_HOST || 'localhost',
@@ -32,9 +35,12 @@ export const pool = new Pool(
         password: process.env.DB_PASSWORD || 'Lakshay@123',
         database: process.env.DB_NAME || 'BroadcastEngine',
         ssl: isProduction && process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-        max: 20,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
+        max: 15,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 5000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
+        statement_timeout: 45000,
       }
 );
 
@@ -47,12 +53,17 @@ export const query = async <T extends QueryResultRow = any>(
   params?: any[]
 ): Promise<QueryResult<T>> => {
   const start = Date.now();
-  const res = await pool.query<T>(text, params);
-  const duration = Date.now() - start;
-  if (process.env.DEBUG_SQL === 'true') {
-    console.log('Executed query', { text, duration, rows: res.rowCount });
+  try {
+    const res = await pool.query<T>(text, params);
+    const duration = Date.now() - start;
+    if (duration > 1500 && process.env.NODE_ENV !== 'test') {
+      console.warn(`⚠️ Slow query warning (${duration}ms):`, text.slice(0, 150));
+    }
+    return res;
+  } catch (err: any) {
+    console.error(`❌ DB Query failed (${Date.now() - start}ms):`, { query: text.slice(0, 150), error: err.message });
+    throw err;
   }
-  return res;
 };
 
 export default {

@@ -46,25 +46,44 @@ export async function initializeDatabase() {
       CREATE INDEX IF NOT EXISTS idx_master_leads_created ON campaign_master_leads(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_campaign_logs_broadcast_status ON campaign_logs(broadcast_id, status);
 
-      -- High-Performance Trigram GIN Search Indexes
-      DO $$
-      BEGIN
-        CREATE EXTENSION IF NOT EXISTS pg_trgm;
-        CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_name ON campaign_master_leads USING gin (full_name gin_trgm_ops);
-        CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_phone ON campaign_master_leads USING gin (phone gin_trgm_ops);
-        CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_email ON campaign_master_leads USING gin (email gin_trgm_ops);
-      EXCEPTION WHEN OTHERS THEN
-        NULL;
-      END $$;
-
       -- Unchangeable Sr. No for Master Data Center
       ALTER TABLE campaign_master_leads ADD COLUMN IF NOT EXISTS sr_no BIGSERIAL;
       CREATE INDEX IF NOT EXISTS idx_master_leads_sr_no ON campaign_master_leads(sr_no);
       CREATE INDEX IF NOT EXISTS idx_master_leads_comp_sr_no ON campaign_master_leads(company_name, sr_no);
+      CREATE INDEX IF NOT EXISTS idx_campaign_logs_bcast_master ON campaign_logs(broadcast_id, master_lead_id);
+      CREATE INDEX IF NOT EXISTS idx_campaign_broadcasts_status_sched ON campaign_broadcasts(status, scheduled_at);
+      CREATE INDEX IF NOT EXISTS idx_campaign_broadcasts_co ON campaign_broadcasts(company_name);
 
       -- Audience Filters (Sr. No Range, Optin, Channel) for Broadcast Campaigns
       ALTER TABLE campaign_broadcasts ADD COLUMN IF NOT EXISTS audience_filters JSONB DEFAULT '{}'::jsonb;
       ALTER TABLE campaign_broadcasts ADD COLUMN IF NOT EXISTS whatsapp_phone_number_id VARCHAR(100);
+    `);
+
+    // High-Performance Trigram GIN Search Indexes
+    try {
+      await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_name ON campaign_master_leads USING gin (full_name gin_trgm_ops);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_phone ON campaign_master_leads USING gin (phone gin_trgm_ops);`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_master_leads_trgm_email ON campaign_master_leads USING gin (email gin_trgm_ops);`);
+    } catch (trgmErr) {
+      console.warn('GIN Trigram extension notice:', trgmErr);
+    }
+
+    // Recover any broadcasts stuck in 'processing' on restart/redeploy
+    try {
+      const rec = await pool.query(`
+        UPDATE campaign_broadcasts 
+        SET status = 'paused', updated_at = CURRENT_TIMESTAMP 
+        WHERE status = 'processing'
+      `);
+      if (rec.rowCount && rec.rowCount > 0) {
+        console.log(`🔄 Auto-recovered ${rec.rowCount} stuck processing broadcast(s) to 'paused' state.`);
+      }
+    } catch (recErr) {
+      console.warn('Recovery notice:', recErr);
+    }
+
+    await pool.query(`
 
       -- Purge legacy mock templates
       DELETE FROM campaign_templates 

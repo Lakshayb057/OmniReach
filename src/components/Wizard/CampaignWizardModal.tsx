@@ -34,12 +34,14 @@ interface CampaignWizardModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  initialData?: any;
 }
 
 export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
+  initialData,
 }) => {
   const [currentStep, setCurrentStep] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
@@ -87,8 +89,51 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
       fetchMasterCount();
       const future = new Date(Date.now() + 15 * 60 * 1000);
       setScheduledAt(future.toISOString().slice(0, 16));
+
+      if (initialData) {
+        setName(initialData.name ? `${initialData.name} (Retrigger)` : '');
+        setDescription(initialData.description || '');
+        if (initialData.channel) setChannel(initialData.channel);
+        if (initialData.tags && Array.isArray(initialData.tags)) setTags(initialData.tags);
+        if (initialData.whatsapp_gateway_id) setSelectedWhatsAppGateway(initialData.whatsapp_gateway_id);
+        if (initialData.whatsapp_phone_number_id) setSelectedWhatsAppSenderNumber(initialData.whatsapp_phone_number_id);
+        if (initialData.email_gateway_id) setSelectedEmailGateway(initialData.email_gateway_id);
+        if (initialData.whatsapp_template_id) setSelectedWhatsAppTemplate(initialData.whatsapp_template_id);
+        if (initialData.email_template_id) setSelectedEmailTemplate(initialData.email_template_id);
+
+        const af = typeof initialData.audience_filters === 'string'
+          ? JSON.parse(initialData.audience_filters || '{}')
+          : (initialData.audience_filters || {});
+
+        setAudienceOption('master_repo');
+        if (af.sr_no_start !== undefined && af.sr_no_start !== null && af.sr_no_start !== '') {
+          setSrNoStart(String(af.sr_no_start));
+        }
+        if (af.sr_no_end !== undefined && af.sr_no_end !== null && af.sr_no_end !== '') {
+          setSrNoEnd(String(af.sr_no_end));
+        }
+        if (af.channel_filter) setChannelFilter(af.channel_filter);
+        if (af.optin_filter) setOptinFilter(af.optin_filter);
+        if (af.search) setSearchFilter(af.search);
+
+        setExecutionMode('immediate');
+        setCurrentStep(1);
+      } else {
+        setName('');
+        setDescription('');
+        setChannel('whatsapp');
+        setTags(['Festive Offer', 'High Priority']);
+        setAudienceOption('upload');
+        setSrNoStart('1');
+        setSrNoEnd('');
+        setChannelFilter('all');
+        setOptinFilter('all');
+        setSearchFilter('');
+        setExecutionMode('immediate');
+        setCurrentStep(1);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, initialData]);
 
   useEffect(() => {
     if (isOpen && audienceOption === 'master_repo') {
@@ -304,6 +349,21 @@ export const CampaignWizardModal: React.FC<CampaignWizardModalProps> = ({
             <X size={18} />
           </button>
         </div>
+
+        {/* Retrigger Campaign Banner */}
+        {initialData && (
+          <div className="bg-gradient-to-r from-blue-900/30 via-indigo-900/20 to-purple-900/30 border-b border-blue-500/20 px-6 py-2.5 flex items-center justify-between text-xs animate-fadeIn">
+            <div className="flex items-center gap-2 text-blue-300">
+              <RotateCcw size={15} className="text-blue-400 shrink-0" />
+              <span>
+                <strong>Retriggering Broadcast:</strong> Pre-filled from &ldquo;{initialData.name}&rdquo;. Review or edit any channels, gateways, templates, or contact ranges before launching.
+              </span>
+            </div>
+            <span className="text-[10px] font-mono font-bold text-cyan-300 bg-cyan-500/15 px-2.5 py-0.5 rounded-full border border-cyan-500/30 shrink-0">
+              PREVIOUS AUDIENCE: {initialData.total_target_count || initialData.total_audience || 0}
+            </span>
+          </div>
+        )}
 
         {/* Step Progress Bar */}
         <div className="bg-[#0b0f19] px-6 py-3 border-b border-slate-800 overflow-x-auto">

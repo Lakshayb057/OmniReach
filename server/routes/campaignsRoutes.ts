@@ -1,7 +1,12 @@
 import express from 'express';
 import { query } from '../config/db';
 import { authenticateToken, requireSuperadmin, logAdminAudit, AuthenticatedRequest } from '../middleware/auth';
-import { emitBroadcastUpdate, processBroadcast } from '../services/worker';
+import { 
+  emitBroadcastUpdate, 
+  processBroadcast, 
+  requestPauseBroadcast, 
+  requestResumeBroadcast 
+} from '../services/worker';
 
 const router = express.Router();
 
@@ -181,7 +186,6 @@ router.get('/:id/logs', authenticateToken, async (req: AuthenticatedRequest, res
     const isSuper = req.user?.role === 'superadmin';
     const compName = req.user?.company_name;
 
-    // Verify campaign ownership
     const bcastRes = await query('SELECT company_name FROM campaign_broadcasts WHERE id = $1', [String(id)]);
     if (bcastRes.rows.length === 0) {
       res.status(404).json({ success: false, message: 'Broadcast not found.' });
@@ -208,18 +212,21 @@ router.get('/:id/logs', authenticateToken, async (req: AuthenticatedRequest, res
   }
 });
 
-// 5. Trigger Immediate Run / Re-run
-router.post('/:id/run-now', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+// 5. Pause Broadcast (Instant stop with progress saved)
+router.post('/:id/pause', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {
     const compCond = req.user?.role === 'superadmin' ? '' : 'AND company_name = $2';
     const params = req.user?.role === 'superadmin' ? [String(id)] : [String(id), req.user?.company_name];
 
+    // Request worker pause
+    requestPauseBroadcast(String(id));
+
     const updateRes = await query(
       `UPDATE campaign_broadcasts 
-       SET status = 'scheduled', scheduled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
+       SET status = 'paused', updated_at = CURRENT_TIMESTAMP 
        WHERE id = $1 ${compCond}
-       RETURNING id`,
+       RETURNING *`,
       params
     );
 
@@ -228,15 +235,100 @@ router.post('/:id/run-now', authenticateToken, async (req: AuthenticatedRequest,
       return;
     }
 
-    await logAdminAudit(req.user!.id, 'FORCE_RUN_CAMPAIGN', 'campaign_broadcasts', String(id), {}, req.ip);
+    emitBroadcastUpdate({ broadcastId: String(id), status: 'paused', message: 'Broadcast paused by user.' });
+    await logAdminAudit(req.user!.id, 'PAUSE_CAMPAIGN', 'campaign_broadcasts', String(id), {}, req.ip);
 
-    res.json({ success: true, message: 'Campaign scheduled for immediate poller dispatch.' });
+    res.json({ success: true, message: 'Broadcast paused successfully.', campaign: updateRes.rows[0] });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// 6. Delete Campaign (Superadmin Only)
+// 6. Resume / Play Broadcast (Picks up from where it left off)
+const handleResumeBroadcast = async (req: AuthenticatedRequest, res: express.Response): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const compCond = req.user?.role === 'superadmin' ? '' : 'AND company_name = $2';
+    const params = req.user?.role === 'superadmin' ? [String(id)] : [String(id), req.user?.company_name];
+
+    requestResumeBroadcast(String(id));
+
+    const updateRes = await query(
+      `UPDATE campaign_broadcasts 
+       SET status = 'scheduled', scheduled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $1 ${compCond}
+       RETURNING *`,
+      params
+    );
+
+    if (updateRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Broadcast not found or access denied.' });
+      return;
+    }
+
+    emitBroadcastUpdate({ broadcastId: String(id), status: 'scheduled', message: 'Broadcast scheduled for immediate dispatch.' });
+    await logAdminAudit(req.user!.id, 'RESUME_CAMPAIGN', 'campaign_broadcasts', String(id), {}, req.ip);
+
+    res.json({ success: true, message: 'Broadcast resumed and queued for immediate dispatch.', campaign: updateRes.rows[0] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+router.post('/:id/resume', authenticateToken, handleResumeBroadcast);
+router.post('/:id/play', authenticateToken, handleResumeBroadcast);
+router.post('/:id/dispatch-now', authenticateToken, handleResumeBroadcast);
+router.post('/:id/run-now', authenticateToken, handleResumeBroadcast);
+
+// 7. Retrigger Broadcast Directly
+router.post('/:id/retrigger', authenticateToken, async (req: AuthenticatedRequest, res): Promise<void> => {
+  const { id } = req.params;
+  try {
+    const bRes = await query(`SELECT * FROM campaign_broadcasts WHERE id = $1`, [String(id)]);
+    if (bRes.rows.length === 0) {
+      res.status(404).json({ success: false, message: 'Broadcast not found.' });
+      return;
+    }
+    const b = bRes.rows[0];
+    if (req.user?.role !== 'superadmin' && b.company_name !== req.user?.company_name) {
+      res.status(403).json({ success: false, message: 'Access denied.' });
+      return;
+    }
+
+    const retriggerName = `${b.name} (Retrigger)`;
+    const newBroadcastRes = await query(
+      `INSERT INTO campaign_broadcasts 
+       (name, company_name, description, channel, tags, whatsapp_gateway_id, whatsapp_phone_number_id, email_gateway_id, whatsapp_template_id, email_template_id, audience_filters, total_target_count, status, execution_mode, scheduled_at, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'scheduled', 'immediate', CURRENT_TIMESTAMP, $13)
+       RETURNING *`,
+      [
+        retriggerName,
+        b.company_name,
+        b.description || '',
+        b.channel,
+        b.tags || [],
+        b.whatsapp_gateway_id,
+        b.whatsapp_phone_number_id,
+        b.email_gateway_id,
+        b.whatsapp_template_id,
+        b.email_template_id,
+        JSON.stringify(b.audience_filters || {}),
+        b.total_target_count || 0,
+        req.user!.id,
+      ]
+    );
+
+    const newBroadcast = newBroadcastRes.rows[0];
+    emitBroadcastUpdate({ type: 'CAMPAIGN_CREATED', campaign: newBroadcast });
+    await logAdminAudit(req.user!.id, 'RETRIGGER_CAMPAIGN', 'campaign_broadcasts', newBroadcast.id, { originalId: id }, req.ip);
+
+    res.json({ success: true, message: 'Broadcast retriggered as new campaign.', campaign: newBroadcast });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 8. Delete Campaign (Superadmin Only)
 router.delete('/:id', authenticateToken, requireSuperadmin, async (req: AuthenticatedRequest, res): Promise<void> => {
   const { id } = req.params;
   try {

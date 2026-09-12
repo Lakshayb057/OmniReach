@@ -38,9 +38,10 @@ const RoutePersistenceTracker: React.FC = () => {
   return null;
 };
 
-const ProtectedLayout: React.FC<{ children: (openWizard: () => void) => React.ReactNode }> = ({ children }) => {
+const ProtectedLayout: React.FC<{ children: (openWizard: (initialData?: any) => void) => React.ReactNode }> = ({ children }) => {
   const { isAuthenticated, isLoading } = useAuth();
   const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const [wizardInitialData, setWizardInitialData] = useState<any>(null);
 
   if (isLoading) {
     return (
@@ -54,20 +55,31 @@ const ProtectedLayout: React.FC<{ children: (openWizard: () => void) => React.Re
     return <Navigate to="/login" replace />;
   }
 
+  const handleOpenWizard = (data?: any) => {
+    setWizardInitialData(data || null);
+    setIsWizardOpen(true);
+  };
+
+  const handleCloseWizard = () => {
+    setIsWizardOpen(false);
+    setWizardInitialData(null);
+  };
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#070b14] text-slate-100 selection:bg-blue-600 selection:text-white">
       <Sidebar />
       <div className="flex-1 flex flex-col h-full min-w-0 overflow-hidden">
         <main className="flex-1 h-full overflow-y-auto overflow-x-hidden min-w-0">
-          {children(() => setIsWizardOpen(true))}
+          {children(handleOpenWizard)}
         </main>
       </div>
 
       {/* Global 6-Step Campaign Creation Wizard */}
       <CampaignWizardModal
         isOpen={isWizardOpen}
-        onClose={() => setIsWizardOpen(false)}
-        onSuccess={() => setIsWizardOpen(false)}
+        initialData={wizardInitialData}
+        onClose={handleCloseWizard}
+        onSuccess={handleCloseWizard}
       />
     </div>
   );

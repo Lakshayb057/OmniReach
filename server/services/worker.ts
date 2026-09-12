@@ -13,6 +13,23 @@ import {
 let ioInstance: SocketIOServer | null = null;
 let isWorkerRunning = false;
 
+// Active Dispatch Tracking for Play/Pause Control
+export const activeDispatchers = new Map<string, { pauseRequested: boolean }>();
+
+export function requestPauseBroadcast(broadcastId: string) {
+  const disp = activeDispatchers.get(broadcastId);
+  if (disp) {
+    disp.pauseRequested = true;
+  }
+}
+
+export function requestResumeBroadcast(broadcastId: string) {
+  const disp = activeDispatchers.get(broadcastId);
+  if (disp) {
+    disp.pauseRequested = false;
+  }
+}
+
 export function setSocketIOInstance(io: SocketIOServer) {
   ioInstance = io;
 }
@@ -30,6 +47,13 @@ import { processJourneyEnrollments } from './journeyEngine';
  */
 export function startBackgroundWorker(intervalMs: number = 5000) {
   console.log('⚡ Background Dispatch Worker initialized (5s poller)...');
+
+  // Recover any stuck 'processing' broadcasts from previous crash or restart to 'paused'
+  query(`
+    UPDATE campaign_broadcasts 
+    SET status = 'paused', updated_at = CURRENT_TIMESTAMP 
+    WHERE status = 'processing'
+  `).catch((e) => console.error('Failed to recover stuck broadcasts:', e));
   
   setInterval(async () => {
     if (isWorkerRunning) return;
@@ -71,15 +95,18 @@ export async function checkAndRunScheduledBroadcasts() {
 }
 
 /**
- * Processes a single broadcast batch
+ * Processes a single broadcast in ultra-efficient keyset chunks with instant Play/Pause controls
  */
 export async function processBroadcast(broadcast: any) {
   console.log(`🚀 Starting dispatch for broadcast: "${broadcast.name}" (ID: ${broadcast.id})`);
 
+  // Register in active dispatchers
+  activeDispatchers.set(broadcast.id, { pauseRequested: false });
+
   // Update status to processing
   await query(
     `UPDATE campaign_broadcasts 
-     SET status = 'processing', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
+     SET status = 'processing', started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP 
      WHERE id = $1`,
     [broadcast.id]
   );
@@ -91,107 +118,97 @@ export async function processBroadcast(broadcast: any) {
   });
 
   try {
-    // 1. Fetch Target Contacts for this broadcast
-    let leadsRes;
     const filters = broadcast.audience_filters && typeof broadcast.audience_filters === 'object'
       ? broadcast.audience_filters
       : (typeof broadcast.audience_filters === 'string' ? JSON.parse(broadcast.audience_filters || '{}') : {});
 
+    const baseConditions: string[] = [];
+    const baseParams: any[] = [];
+
+    // Company isolation
+    if (broadcast.company_name && broadcast.company_name !== 'OmniReach Global') {
+      baseParams.push(broadcast.company_name);
+      baseConditions.push(`company_name = $${baseParams.length}`);
+    }
+
+    // Direct upload vs Master Repo
     if (filters && filters.source === 'master_repo') {
-      const conditions: string[] = [];
-      const params: any[] = [];
-
-      // Company isolation: Company only sends to their own leads
-      if (broadcast.company_name && broadcast.company_name !== 'OmniReach Global') {
-        params.push(broadcast.company_name);
-        conditions.push(`company_name = $${params.length}`);
-      }
-
-      // Sr. No Range Filter: sr_no_start to sr_no_end
+      // Sr. No Range Filter
       if (filters.sr_no_start !== undefined && filters.sr_no_start !== null && filters.sr_no_start !== '') {
-        params.push(Number(filters.sr_no_start));
-        conditions.push(`sr_no >= $${params.length}`);
+        baseParams.push(Number(filters.sr_no_start));
+        baseConditions.push(`sr_no >= $${baseParams.length}`);
       }
       if (filters.sr_no_end !== undefined && filters.sr_no_end !== null && filters.sr_no_end !== '') {
-        params.push(Number(filters.sr_no_end));
-        conditions.push(`sr_no <= $${params.length}`);
+        baseParams.push(Number(filters.sr_no_end));
+        baseConditions.push(`sr_no <= $${baseParams.length}`);
       }
 
       // Channel requirement filter
       if (filters.channel_filter === 'phone_only') {
-        conditions.push(`phone IS NOT NULL AND phone != ''`);
+        baseConditions.push(`phone IS NOT NULL AND phone != ''`);
       } else if (filters.channel_filter === 'email_only') {
-        conditions.push(`email IS NOT NULL AND email != ''`);
+        baseConditions.push(`email IS NOT NULL AND email != ''`);
       } else if (filters.channel_filter === 'both') {
-        conditions.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
+        baseConditions.push(`phone IS NOT NULL AND phone != '' AND email IS NOT NULL AND email != ''`);
       }
 
       // Opt-in filter
       if (filters.optin_filter === 'whatsapp_optin') {
-        conditions.push(`whatsapp_optin = true`);
+        baseConditions.push(`whatsapp_optin = true`);
       } else if (filters.optin_filter === 'email_optin') {
-        conditions.push(`email_optin = true`);
+        baseConditions.push(`email_optin = true`);
       }
 
       // Search keyword filter
       if (filters.search && typeof filters.search === 'string' && filters.search.trim().length > 0) {
-        params.push(`%${filters.search.trim().toLowerCase()}%`);
-        const pIdx = params.length;
-        conditions.push(`(LOWER(full_name) LIKE $${pIdx} OR LOWER(email) LIKE $${pIdx} OR phone LIKE $${pIdx} OR urn LIKE $${pIdx} OR fmcb_id LIKE $${pIdx})`);
+        baseParams.push(`%${filters.search.trim().toLowerCase()}%`);
+        const pIdx = baseParams.length;
+        baseConditions.push(`(LOWER(full_name) LIKE $${pIdx} OR LOWER(email) LIKE $${pIdx} OR phone LIKE $${pIdx} OR urn LIKE $${pIdx} OR fmcb_id LIKE $${pIdx})`);
       }
-
-      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-      leadsRes = await query(
-        `SELECT id, urn, fmcb_id, sr_no, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
-         FROM campaign_master_leads
-         ${whereClause}
-         ORDER BY sr_no ASC`,
-        params
-      );
     } else {
-      // Direct upload for this broadcast
-      leadsRes = await query(
-        `SELECT id, urn, fmcb_id, sr_no, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
-         FROM campaign_master_leads
-         WHERE last_broadcast_id = $1
-         ORDER BY sr_no ASC`,
-        [broadcast.id]
-      );
-
-      // Fallback if no specific leads linked to this broadcast id, target master leads in company
-      if (leadsRes.rows.length === 0) {
-        const compCondition = broadcast.company_name && broadcast.company_name !== 'OmniReach Global'
-          ? `WHERE company_name = $1`
-          : '';
-        const params = compCondition ? [broadcast.company_name] : [];
-        leadsRes = await query(
-          `SELECT id, urn, fmcb_id, sr_no, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
-           FROM campaign_master_leads
-           ${compCondition}
-           ORDER BY sr_no ASC`,
-          params
-        );
-      }
+      // Linked direct upload
+      baseParams.push(broadcast.id);
+      baseConditions.push(`last_broadcast_id = $${baseParams.length}`);
     }
+
+    const baseWhereSql = baseConditions.length > 0 ? `WHERE ${baseConditions.join(' AND ')}` : '';
+
+    // Fast COUNT for total target audience (without loading all rows into Node memory)
+    const countRes = await query(
+      `SELECT COUNT(*) as total FROM campaign_master_leads ${baseWhereSql}`,
+      baseParams
+    );
+    const totalTarget = parseInt(countRes.rows[0]?.total || '0', 10);
 
     // Sync total target count in database
     await query(
       `UPDATE campaign_broadcasts SET total_target_count = $1 WHERE id = $2`,
-      [leadsRes.rows.length, broadcast.id]
+      [totalTarget, broadcast.id]
     );
 
-    const leads: LeadContext[] = leadsRes.rows;
-    let whatsappSent = 0;
-    let whatsappDelivered = 0;
-    let whatsappFailed = 0;
-    let emailSent = 0;
-    let emailDelivered = 0;
-    let emailFailed = 0;
-    let totalSuppressed = 0;
+    // Check if resuming from previous execution: find last processed Sr. No
+    const maxLoggedRes = await query(
+      `SELECT COALESCE(MAX(ml.sr_no), 0) as last_sr_no
+       FROM campaign_logs cl
+       JOIN campaign_master_leads ml ON cl.master_lead_id = ml.id
+       WHERE cl.broadcast_id = $1`,
+      [broadcast.id]
+    );
+    let lastSrNo = parseInt(maxLoggedRes.rows[0]?.last_sr_no || '0', 10);
+
+    // Existing counters
+    let whatsappSent = broadcast.whatsapp_sent || 0;
+    let whatsappDelivered = broadcast.whatsapp_delivered || 0;
+    let whatsappFailed = broadcast.whatsapp_failed || 0;
+    let emailSent = broadcast.email_sent || 0;
+    let emailDelivered = broadcast.email_delivered || 0;
+    let emailFailed = broadcast.email_failed || 0;
+    let totalSuppressed = broadcast.total_suppressed || 0;
+    let processedTotal = whatsappSent + emailSent + totalSuppressed;
 
     const channel = broadcast.channel; // 'whatsapp', 'email', 'both'
 
-    // Buffers to batch database writes (eliminates 100,000+ single roundtrips)
+    // Buffers to batch database writes
     let pendingLogs: any[] = [];
     let pendingWaSuccessLeadIds: string[] = [];
     let pendingEmailSuccessLeadIds: string[] = [];
@@ -241,51 +258,181 @@ export async function processBroadcast(broadcast: any) {
           [ids]
         );
       }
+
+      // Persist incremental counters to broadcast row
+      await query(
+        `UPDATE campaign_broadcasts 
+         SET whatsapp_sent = $1, whatsapp_delivered = $2, whatsapp_failed = $3,
+             email_sent = $4, email_delivered = $5, email_failed = $6,
+             total_suppressed = $7, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $8`,
+        [whatsappSent, whatsappDelivered, whatsappFailed, emailSent, emailDelivered, emailFailed, totalSuppressed, broadcast.id]
+      );
     };
 
-    for (let i = 0; i < leads.length; i++) {
-      const lead: any = leads[i];
+    // Keyset Chunk Loop: Fetch 150 leads at a time using index on sr_no
+    const CHUNK_SIZE = 150;
+    let hasMore = true;
 
-      // A. WhatsApp Channel Dispatch
-      if (channel === 'whatsapp' || channel === 'both') {
-        if (!lead.phone) {
-          if (channel === 'whatsapp') {
+    while (hasMore) {
+      // 1. Check if user requested PAUSE via API
+      const dispState = activeDispatchers.get(broadcast.id);
+      if (dispState?.pauseRequested) {
+        console.log(`⏸️ Broadcast "${broadcast.name}" received Pause signal.`);
+        await flushLogsAndCounters();
+        await query(
+          `UPDATE campaign_broadcasts SET status = 'paused', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          [broadcast.id]
+        );
+        emitBroadcastUpdate({
+          broadcastId: broadcast.id,
+          status: 'paused',
+          message: `Broadcast "${broadcast.name}" paused. Progress saved.`,
+        });
+        activeDispatchers.delete(broadcast.id);
+        return;
+      }
+
+      // 2. Also check DB in case another process paused it
+      const dbStatusCheck = await query(`SELECT status FROM campaign_broadcasts WHERE id = $1`, [broadcast.id]);
+      if (dbStatusCheck.rows[0]?.status === 'paused') {
+        console.log(`⏸️ Broadcast "${broadcast.name}" status is paused in DB.`);
+        await flushLogsAndCounters();
+        activeDispatchers.delete(broadcast.id);
+        return;
+      }
+
+      // Keyset query: sr_no > lastSrNo
+      const chunkConditions = [...baseConditions];
+      const chunkParams = [...baseParams];
+
+      chunkParams.push(lastSrNo);
+      chunkConditions.push(`sr_no > $${chunkParams.length}`);
+
+      chunkParams.push(CHUNK_SIZE);
+      const limitParamIdx = chunkParams.length;
+
+      const chunkWhereSql = chunkConditions.length > 0 ? `WHERE ${chunkConditions.join(' AND ')}` : '';
+      const chunkRes = await query(
+        `SELECT id, urn, fmcb_id, sr_no, full_name, phone, email, address, city, pan_no, custom_attributes, whatsapp_optin, email_optin
+         FROM campaign_master_leads
+         ${chunkWhereSql}
+         ORDER BY sr_no ASC
+         LIMIT $${limitParamIdx}`,
+        chunkParams
+      );
+
+      const chunkLeads: LeadContext[] = chunkRes.rows;
+      if (chunkLeads.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      for (let i = 0; i < chunkLeads.length; i++) {
+        // Periodic check for pause inside chunk
+        if (i % 20 === 0) {
+          const checkDisp = activeDispatchers.get(broadcast.id);
+          if (checkDisp?.pauseRequested) {
+            hasMore = false;
+            break;
+          }
+        }
+
+        const lead: any = chunkLeads[i];
+        lastSrNo = Number(lead.sr_no) || lastSrNo;
+        processedTotal++;
+
+        // A. WhatsApp Channel Dispatch
+        if (channel === 'whatsapp' || channel === 'both') {
+          if (!lead.phone) {
+            if (channel === 'whatsapp') {
+              totalSuppressed++;
+              pendingLogs.push({
+                broadcast_id: broadcast.id,
+                master_lead_id: lead.id,
+                channel: 'whatsapp',
+                recipient: 'N/A',
+                status: 'suppressed',
+                error_message: 'Lead has no phone number recorded',
+              });
+            }
+          } else if (!lead.whatsapp_optin) {
             totalSuppressed++;
             pendingLogs.push({
               broadcast_id: broadcast.id,
               master_lead_id: lead.id,
               channel: 'whatsapp',
-              recipient: 'N/A',
+              recipient: lead.phone,
               status: 'suppressed',
-              error_message: 'Lead has no phone number recorded',
+              error_message: 'Lead opted-out of WhatsApp communications',
             });
-          }
-        } else if (!lead.whatsapp_optin) {
-          totalSuppressed++;
-          pendingLogs.push({
-            broadcast_id: broadcast.id,
-            master_lead_id: lead.id,
-            channel: 'whatsapp',
-            recipient: lead.phone,
-            status: 'suppressed',
-            error_message: 'Lead opted-out of WhatsApp communications',
-          });
-        } else {
-          // Resolve Anti-Ban settings for Baileys
-          const isBaileys = broadcast.whatsapp_gateway_type === 'whatsapp_baileys';
-          const antiBanConfig: AntiBanSettings = {
-            ...DEFAULT_ANTI_BAN_SETTINGS,
-            ...(broadcast.whatsapp_credentials?.anti_ban_settings || {}),
-          };
+          } else {
+            // Resolve Anti-Ban settings for Baileys
+            const isBaileys = broadcast.whatsapp_gateway_type === 'whatsapp_baileys';
+            const antiBanConfig: AntiBanSettings = {
+              ...DEFAULT_ANTI_BAN_SETTINGS,
+              ...(broadcast.whatsapp_credentials?.anti_ban_settings || {}),
+            };
 
-          // 1. Daily Safety Cap check for Baileys
-          if (isBaileys && broadcast.whatsapp_gateway_id && antiBanConfig.daily_send_limit > 0) {
-            const dailyCheck = await checkAndIncrementDailyCount(
-              broadcast.whatsapp_gateway_id,
-              antiBanConfig.daily_send_limit
+            // 1. Daily Safety Cap check for Baileys
+            if (isBaileys && broadcast.whatsapp_gateway_id && antiBanConfig.daily_send_limit > 0) {
+              const dailyCheck = await checkAndIncrementDailyCount(
+                broadcast.whatsapp_gateway_id,
+                antiBanConfig.daily_send_limit
+              );
+              if (!dailyCheck.allowed) {
+                console.warn(`🛑 Anti-Ban: Daily safety limit (${antiBanConfig.daily_send_limit}) reached for Baileys gateway ${broadcast.whatsapp_gateway_id}.`);
+                totalSuppressed++;
+                pendingLogs.push({
+                  broadcast_id: broadcast.id,
+                  master_lead_id: lead.id,
+                  channel: 'whatsapp',
+                  recipient: lead.phone,
+                  status: 'suppressed',
+                  error_message: `Daily safety limit (${antiBanConfig.daily_send_limit} msgs/day) reached. Message suppressed.`,
+                });
+                continue;
+              }
+            }
+
+            const res = await sendWhatsAppMessage(
+              lead.phone,
+              {
+                meta_template_name: broadcast.meta_template_name,
+                meta_language: broadcast.meta_language,
+                header_type: broadcast.wt_header_type,
+                header_content: broadcast.wt_header_content,
+                body_content: broadcast.wt_body_content || 'Default notification',
+                footer_content: broadcast.wt_footer_content,
+                buttons_json: broadcast.wt_buttons,
+              },
+              lead,
+              broadcast.whatsapp_credentials || {},
+              broadcast.id,
+              broadcast.whatsapp_gateway_type || 'whatsapp_meta',
+              broadcast.whatsapp_gateway_id
             );
-            if (!dailyCheck.allowed) {
-              console.warn(`🛑 Anti-Ban: Daily safety limit (${antiBanConfig.daily_send_limit}) reached for Baileys gateway ${broadcast.whatsapp_gateway_id}. Halting message dispatch.`);
+
+            // Anti-ban pacing delay and batch cooldowns for Baileys
+            if (isBaileys && processedTotal < totalTarget) {
+              const batchSize = antiBanConfig.batch_size || 20;
+              const cooldownSec = antiBanConfig.batch_cooldown_seconds || 60;
+
+              if (processedTotal % batchSize === 0) {
+                console.log(`☕ Anti-Ban: Dispatched batch of ${batchSize} messages. Cooling down for ${cooldownSec}s...`);
+                emitBroadcastUpdate({
+                  broadcastId: broadcast.id,
+                  status: 'cooling_down',
+                  message: `Anti-Ban: Pausing for ${cooldownSec}s after ${processedTotal} messages...`,
+                });
+                await new Promise((resolve) => setTimeout(resolve, cooldownSec * 1000));
+              } else {
+                const delayMs = calculatePacingDelay(antiBanConfig);
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+              }
+            }
+
+            if (res.status === 'suppressed') {
               totalSuppressed++;
               pendingLogs.push({
                 broadcast_id: broadcast.id,
@@ -293,169 +440,130 @@ export async function processBroadcast(broadcast: any) {
                 channel: 'whatsapp',
                 recipient: lead.phone,
                 status: 'suppressed',
-                error_message: `Daily safety limit (${antiBanConfig.daily_send_limit} msgs/day) reached. Message suppressed to protect number.`,
+                error_message: res.error || 'Suppressed by anti-ban protection',
               });
-              continue;
-            }
-          }
-
-          const res = await sendWhatsAppMessage(
-            lead.phone,
-            {
-              meta_template_name: broadcast.meta_template_name,
-              meta_language: broadcast.meta_language,
-              header_type: broadcast.wt_header_type,
-              header_content: broadcast.wt_header_content,
-              body_content: broadcast.wt_body_content || 'Default notification',
-              footer_content: broadcast.wt_footer_content,
-              buttons_json: broadcast.wt_buttons,
-            },
-            lead,
-            broadcast.whatsapp_credentials || {},
-            broadcast.id,
-            broadcast.whatsapp_gateway_type || 'whatsapp_meta',
-            broadcast.whatsapp_gateway_id
-          );
-
-          // 2. Anti-ban pacing delay and batch cooldowns for Baileys
-          if (isBaileys && i < leads.length - 1) {
-            const batchSize = antiBanConfig.batch_size || 20;
-            const cooldownSec = antiBanConfig.batch_cooldown_seconds || 60;
-
-            if ((i + 1) % batchSize === 0) {
-              console.log(`☕ Anti-Ban: Dispatched batch of ${batchSize} messages. Cooling down for ${cooldownSec}s...`);
-              emitBroadcastUpdate({
-                broadcastId: broadcast.id,
-                status: 'cooling_down',
-                message: `Anti-Ban Protection: Pausing for ${cooldownSec}s after ${i + 1} messages to safeguard number...`,
+            } else if (res.success) {
+              whatsappSent++;
+              whatsappDelivered++;
+              pendingWaSuccessLeadIds.push(lead.id);
+              pendingLogs.push({
+                broadcast_id: broadcast.id,
+                master_lead_id: lead.id,
+                channel: 'whatsapp',
+                recipient: lead.phone,
+                status: 'delivered',
+                meta_message_id: res.messageId,
               });
-              await new Promise((resolve) => setTimeout(resolve, cooldownSec * 1000));
             } else {
-              const delayMs = calculatePacingDelay(antiBanConfig);
-              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              whatsappFailed++;
+              pendingLogs.push({
+                broadcast_id: broadcast.id,
+                master_lead_id: lead.id,
+                channel: 'whatsapp',
+                recipient: lead.phone,
+                status: 'failed',
+                error_message: res.error,
+              });
             }
           }
-
-          if (res.status === 'suppressed') {
-            totalSuppressed++;
-            pendingLogs.push({
-              broadcast_id: broadcast.id,
-              master_lead_id: lead.id,
-              channel: 'whatsapp',
-              recipient: lead.phone,
-              status: 'suppressed',
-              error_message: res.error || 'Suppressed by anti-ban protection',
-            });
-          } else if (res.success) {
-            whatsappSent++;
-            whatsappDelivered++;
-            pendingWaSuccessLeadIds.push(lead.id);
-            pendingLogs.push({
-              broadcast_id: broadcast.id,
-              master_lead_id: lead.id,
-              channel: 'whatsapp',
-              recipient: lead.phone,
-              status: 'delivered',
-              meta_message_id: res.messageId,
-            });
-          } else {
-            whatsappFailed++;
-            pendingLogs.push({
-              broadcast_id: broadcast.id,
-              master_lead_id: lead.id,
-              channel: 'whatsapp',
-              recipient: lead.phone,
-              status: 'failed',
-              error_message: res.error,
-            });
-          }
         }
-      }
 
-      // B. Email Channel Dispatch
-      if (channel === 'email' || channel === 'both') {
-        if (!lead.email) {
-          if (channel === 'email') {
+        // B. Email Channel Dispatch
+        if (channel === 'email' || channel === 'both') {
+          if (!lead.email) {
+            if (channel === 'email') {
+              totalSuppressed++;
+              pendingLogs.push({
+                broadcast_id: broadcast.id,
+                master_lead_id: lead.id,
+                channel: 'email',
+                recipient: 'N/A',
+                status: 'suppressed',
+                error_message: 'Lead has no email address recorded',
+              });
+            }
+          } else if (!lead.email_optin) {
             totalSuppressed++;
             pendingLogs.push({
               broadcast_id: broadcast.id,
               master_lead_id: lead.id,
               channel: 'email',
-              recipient: 'N/A',
-              status: 'suppressed',
-              error_message: 'Lead has no email address recorded',
-            });
-          }
-        } else if (!lead.email_optin) {
-          totalSuppressed++;
-          pendingLogs.push({
-            broadcast_id: broadcast.id,
-            master_lead_id: lead.id,
-            channel: 'email',
-            recipient: lead.email,
-            status: 'suppressed',
-            error_message: 'Lead opted-out of Email communications',
-          });
-        } else {
-          const res = await sendEmailMessage(
-            lead.email,
-            {
-              email_subject: broadcast.email_subject || 'OmniReach Notification',
-              email_html: broadcast.email_html,
-              body_content: broadcast.et_body_content,
-            },
-            lead,
-            broadcast.email_credentials || {},
-            broadcast.email_gateway_type || 'email_smtp',
-            broadcast.id
-          );
-
-          if (res.success) {
-            emailSent++;
-            emailDelivered++;
-            pendingEmailSuccessLeadIds.push(lead.id);
-            pendingLogs.push({
-              broadcast_id: broadcast.id,
-              master_lead_id: lead.id,
-              channel: 'email',
               recipient: lead.email,
-              status: 'delivered',
-              ses_message_id: res.messageId,
+              status: 'suppressed',
+              error_message: 'Lead opted-out of Email communications',
             });
           } else {
-            emailFailed++;
-            pendingLogs.push({
-              broadcast_id: broadcast.id,
-              master_lead_id: lead.id,
-              channel: 'email',
-              recipient: lead.email,
-              status: 'failed',
-              error_message: res.error,
-            });
+            const res = await sendEmailMessage(
+              lead.email,
+              {
+                email_subject: broadcast.email_subject || 'OmniReach Notification',
+                email_html: broadcast.email_html,
+                body_content: broadcast.et_body_content,
+              },
+              lead,
+              broadcast.email_credentials || {},
+              broadcast.email_gateway_type || 'email_smtp',
+              broadcast.id
+            );
+
+            if (res.success) {
+              emailSent++;
+              emailDelivered++;
+              pendingEmailSuccessLeadIds.push(lead.id);
+              pendingLogs.push({
+                broadcast_id: broadcast.id,
+                master_lead_id: lead.id,
+                channel: 'email',
+                recipient: lead.email,
+                status: 'delivered',
+                ses_message_id: res.messageId,
+              });
+            } else {
+              emailFailed++;
+              pendingLogs.push({
+                broadcast_id: broadcast.id,
+                master_lead_id: lead.id,
+                channel: 'email',
+                recipient: lead.email,
+                status: 'failed',
+                error_message: res.error,
+              });
+            }
           }
         }
       }
 
-      // Periodic flush and progress emission
-      if ((i + 1) % 50 === 0 || i === leads.length - 1) {
-        await flushLogsAndCounters();
-        emitBroadcastUpdate({
-          broadcastId: broadcast.id,
-          progress: Math.round(((i + 1) / leads.length) * 100),
-          processed: i + 1,
-          total: leads.length,
-          delivered: whatsappDelivered + emailDelivered,
-          suppressed: totalSuppressed,
-          failed: whatsappFailed + emailFailed,
-        });
+      // Flush logs and counters at end of each chunk
+      await flushLogsAndCounters();
+
+      emitBroadcastUpdate({
+        broadcastId: broadcast.id,
+        progress: totalTarget > 0 ? Math.min(100, Math.round((processedTotal / totalTarget) * 100)) : 100,
+        processed: processedTotal,
+        total: totalTarget,
+        delivered: whatsappDelivered + emailDelivered,
+        suppressed: totalSuppressed,
+        failed: whatsappFailed + emailFailed,
+      });
+
+      if (chunkLeads.length < CHUNK_SIZE) {
+        hasMore = false;
       }
+    }
+
+    // Check if stopped due to pause
+    const finalDispCheck = activeDispatchers.get(broadcast.id);
+    if (finalDispCheck?.pauseRequested) {
+      await query(`UPDATE campaign_broadcasts SET status = 'paused', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [broadcast.id]);
+      emitBroadcastUpdate({ broadcastId: broadcast.id, status: 'paused', message: `Broadcast "${broadcast.name}" paused.` });
+      activeDispatchers.delete(broadcast.id);
+      return;
     }
 
     await flushLogsAndCounters();
 
     // Set 1-hour cooldown timestamp
     const cooldownTime = new Date(Date.now() + 60 * 60 * 1000);
-
     const totalDelivered = whatsappDelivered + emailDelivered;
     const totalFailed = whatsappFailed + emailFailed;
     const finalStatus =
@@ -486,7 +594,7 @@ export async function processBroadcast(broadcast: any) {
       [
         finalStatus,
         cooldownTime,
-        leads.length,
+        totalTarget,
         whatsappSent,
         whatsappDelivered,
         whatsappFailed,
@@ -498,19 +606,13 @@ export async function processBroadcast(broadcast: any) {
       ]
     );
 
-    if (finalStatus === 'failed') {
-      console.error(`❌ Broadcast "${broadcast.name}" failed: All ${totalFailed} recipient dispatches failed. Check gateway credentials.`);
-    } else if (finalStatus === 'completed_with_errors') {
-      console.warn(`⚠️ Broadcast "${broadcast.name}" completed with warnings: ${totalDelivered} delivered, ${totalFailed} failed.`);
-    } else {
-      console.log(`✅ Broadcast "${broadcast.name}" completed successfully (${totalDelivered} delivered).`);
-    }
+    activeDispatchers.delete(broadcast.id);
 
     emitBroadcastUpdate({
       broadcastId: broadcast.id,
       status: finalStatus,
       stats: {
-        total_target_count: leads.length,
+        total_target_count: totalTarget,
         whatsapp_sent: whatsappSent,
         whatsapp_delivered: whatsappDelivered,
         whatsapp_failed: whatsappFailed,
@@ -526,6 +628,7 @@ export async function processBroadcast(broadcast: any) {
     });
   } catch (err: any) {
     console.error(`❌ Broadcast "${broadcast.name}" failed:`, err);
+    activeDispatchers.delete(broadcast.id);
     await query(
       `UPDATE campaign_broadcasts SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [broadcast.id]

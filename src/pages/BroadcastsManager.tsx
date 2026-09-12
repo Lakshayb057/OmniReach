@@ -8,6 +8,7 @@ import {
   AlertCircle,
   Play,
   Pause,
+  RotateCcw,
   Trash2,
   Layers,
   Smartphone,
@@ -17,12 +18,13 @@ import {
   FileText,
   X,
   Building2,
+  RefreshCw,
 } from 'lucide-react';
 import { useSocket } from '../context/SocketContext';
 import { useAuth } from '../context/AuthContext';
 
 interface BroadcastsManagerProps {
-  onOpenWizard: () => void;
+  onOpenWizard: (initialData?: any) => void;
 }
 
 export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWizard }) => {
@@ -98,10 +100,10 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
 
   const handleDispatchNow = async (id: string) => {
     try {
-      await axios.post(`/api/campaigns/${id}/dispatch-now`);
+      await axios.post(`/api/campaigns/${id}/resume`);
       fetchCampaigns();
-    } catch (err) {
-      alert('Failed to dispatch broadcast.');
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to dispatch broadcast.');
     }
   };
 
@@ -109,9 +111,14 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
     try {
       await axios.post(`/api/campaigns/${id}/pause`);
       fetchCampaigns();
-    } catch (err) {
-      alert('Failed to pause broadcast.');
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to pause broadcast.');
     }
+  };
+
+  const handleRetrigger = (broadcast: any) => {
+    // Opens the 6-Step Wizard with ALL data prefilled from this broadcast
+    onOpenWizard(broadcast);
   };
 
   const handleDelete = async (id: string) => {
@@ -119,8 +126,8 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
     try {
       await axios.delete(`/api/campaigns/${id}`);
       fetchCampaigns();
-    } catch (err) {
-      alert('Failed to delete broadcast.');
+    } catch (err: any) {
+      alert(err.response?.data?.message || 'Failed to delete broadcast.');
     }
   };
 
@@ -160,7 +167,7 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
             Broadcast Campaigns Manager
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Schedule high-throughput WhatsApp and Email blasts with reverse countdown countdowns and cooldown protection
+            Schedule high-throughput broadcasts • Real-time Play, Pause & Retrigger controls • Chunked database dispatching
           </p>
         </div>
 
@@ -183,7 +190,7 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
             </div>
           )}
           <button
-            onClick={onOpenWizard}
+            onClick={() => onOpenWizard()}
             className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold shadow-lg shadow-blue-600/25 flex items-center gap-2 transition-all hover:scale-[1.02]"
           >
             <PlusCircle size={15} />
@@ -262,10 +269,25 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
                           <Radio size={12} />
                           <span>Processing Batch...</span>
                         </span>
+                      ) : c.status === 'paused' ? (
+                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1.5 w-fit">
+                          <Pause size={12} />
+                          <span>Paused</span>
+                        </span>
+                      ) : c.status === 'cooling_down' ? (
+                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 flex items-center gap-1.5 w-fit animate-pulse">
+                          <RefreshCw size={12} className="animate-spin" />
+                          <span>Cooling Down</span>
+                        </span>
                       ) : c.status === 'completed' ? (
                         <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5 w-fit">
                           <CheckCircle2 size={12} />
                           <span>Completed</span>
+                        </span>
+                      ) : c.status === 'completed_with_errors' ? (
+                        <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center gap-1.5 w-fit">
+                          <AlertCircle size={12} />
+                          <span>With Warnings</span>
                         </span>
                       ) : (
                         <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30 w-fit">
@@ -281,37 +303,74 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
                     <td className="p-4 font-mono text-blue-400 font-semibold">{c.total_clicks || 0}</td>
                     <td className="p-4 text-right">
                       <div className="flex items-center justify-end space-x-1.5">
-                        {c.status === 'scheduled' && (
+                        {/* Play / Resume Button */}
+                        {c.status === 'paused' && (
                           <button
                             onClick={() => handleDispatchNow(c.id)}
-                            className="p-1.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-lg transition-colors border border-blue-500/30"
-                            title="Dispatch Immediately"
+                            className="px-2 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 rounded-lg transition-colors border border-emerald-500/30 flex items-center gap-1 text-[11px] font-bold"
+                            title="Resume Broadcast Dispatch"
                           >
-                            <Play size={14} />
+                            <Play size={12} />
+                            <span>Play</span>
                           </button>
                         )}
-                        {c.status === 'scheduled' && (
+
+                        {/* Pause Button */}
+                        {(c.status === 'processing' || c.status === 'cooling_down') && (
                           <button
                             onClick={() => handlePause(c.id)}
-                            className="p-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 rounded-lg transition-colors border border-amber-500/30"
-                            title="Pause Schedule"
+                            className="px-2 py-1 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 rounded-lg transition-colors border border-amber-500/30 flex items-center gap-1 text-[11px] font-bold"
+                            title="Pause Broadcast Dispatch"
                           >
-                            <Pause size={14} />
+                            <Pause size={12} />
+                            <span>Pause</span>
                           </button>
                         )}
+
+                        {/* Scheduled Action Controls */}
+                        {c.status === 'scheduled' && (
+                          <>
+                            <button
+                              onClick={() => handleDispatchNow(c.id)}
+                              className="p-1.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 rounded-lg transition-colors border border-blue-500/30"
+                              title="Dispatch Immediately"
+                            >
+                              <Play size={13} />
+                            </button>
+                            <button
+                              onClick={() => handlePause(c.id)}
+                              className="p-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 rounded-lg transition-colors border border-amber-500/30"
+                              title="Pause Schedule"
+                            >
+                              <Pause size={13} />
+                            </button>
+                          </>
+                        )}
+
+                        {/* Retrigger Button (Prepopulates 6-step Wizard with all broadcast configuration) */}
+                        <button
+                          onClick={() => handleRetrigger(c)}
+                          className="px-2.5 py-1 bg-gradient-to-r from-blue-600/20 to-indigo-600/20 hover:from-blue-600/30 hover:to-indigo-600/30 text-blue-300 border border-blue-500/40 rounded-lg flex items-center gap-1.5 text-[11px] font-bold shadow-sm transition-all hover:scale-[1.02] cursor-pointer"
+                          title="Open 6-Step Wizard with this campaign's channels, templates, and contact filters to edit or re-run"
+                        >
+                          <RotateCcw size={12} className="text-blue-400" />
+                          <span>Retrigger</span>
+                        </button>
+
                         <button
                           onClick={() => handleViewLogs(c)}
                           className="px-2.5 py-1 bg-[#070b14] hover:bg-slate-800 text-slate-300 rounded-lg text-[11px] font-semibold transition-colors border border-slate-800"
                         >
                           Logs
                         </button>
+
                         {isSuperadmin && (
                           <button
                             onClick={() => handleDelete(c.id)}
                             className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
                             title="Delete Campaign (Superadmin Only)"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={13} />
                           </button>
                         )}
                       </div>
@@ -349,36 +408,56 @@ export const BroadcastsManager: React.FC<BroadcastsManagerProps> = ({ onOpenWiza
                     <th className="p-2.5">URN / FMCB ID</th>
                     <th className="p-2.5">Channel</th>
                     <th className="p-2.5">Status</th>
-                    <th className="p-2.5">Identifier / Error</th>
+                    <th className="p-2.5">Message / Error Details</th>
+                    <th className="p-2.5">Time</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/80 text-slate-300">
-                  {selectedLogs.map((log) => (
-                    <tr key={log.id}>
-                      <td className="p-2.5 font-bold text-white">{log.lead_name || 'Customer'}</td>
-                      <td className="p-2.5">{log.recipient}</td>
-                      <td className="p-2.5 font-mono text-[11px] text-blue-400">{log.lead_urn || log.lead_fmcb_id || 'N/A'}</td>
-                      <td className="p-2.5 uppercase font-bold text-[10px]">{log.channel}</td>
-                      <td className="p-2.5">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            log.status === 'delivered'
-                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                              : log.status === 'suppressed'
-                              ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
-                              : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                          }`}
-                        >
-                          {log.status}
-                        </span>
-                      </td>
-                      <td className="p-2.5 text-slate-400 text-[11px] truncate max-w-xs font-mono">
-                        {log.meta_message_id || log.ses_message_id || log.error_message || 'Transmitted'}
+                  {selectedLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-6 text-center text-slate-500">
+                        No delivery logs recorded for this campaign yet.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    selectedLogs.map((log) => (
+                      <tr key={log.id} className="hover:bg-[#070b14]/40">
+                        <td className="p-2.5 font-bold text-white">{log.lead_name || 'Customer'}</td>
+                        <td className="p-2.5 font-mono text-slate-200">{log.recipient}</td>
+                        <td className="p-2.5 font-mono text-[10px] text-cyan-400">{log.lead_urn || log.lead_fmcb_id || '—'}</td>
+                        <td className="p-2.5 uppercase text-[10px] font-bold text-slate-400">{log.channel}</td>
+                        <td className="p-2.5">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              log.status === 'delivered'
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                                : log.status === 'suppressed'
+                                ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                                : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
+                            }`}
+                          >
+                            {log.status}
+                          </span>
+                        </td>
+                        <td className="p-2.5 text-slate-400 text-[11px] truncate max-w-xs font-mono">
+                          {log.error_message || log.meta_message_id || log.ses_message_id || 'Dispatched successfully'}
+                        </td>
+                        <td className="p-2.5 text-slate-400 text-[11px]">
+                          {new Date(log.created_at).toLocaleTimeString()}
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
+            </div>
+            <div className="px-6 py-3 bg-[#070b14] border-t border-slate-800 flex justify-end">
+              <button
+                onClick={() => setSelectedLogs(null)}
+                className="px-4 py-1.5 bg-[#0f172a] hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-semibold border border-slate-700"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
