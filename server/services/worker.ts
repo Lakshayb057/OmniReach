@@ -9,7 +9,7 @@ import {
   DEFAULT_ANTI_BAN_SETTINGS,
   AntiBanSettings,
 } from './antiBanService';
-import { buildSearchClauses } from '../routes/leadsRoutes';
+import { buildSearchClauses } from '../utils/searchUtils';
 
 let ioInstance: SocketIOServer | null = null;
 let isWorkerRunning = false;

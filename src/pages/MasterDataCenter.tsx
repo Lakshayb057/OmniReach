@@ -48,6 +48,8 @@ export const MasterDataCenter: React.FC = () => {
   const [channelFilter, setChannelFilter] = useState<string>('all');
   const [srNoStart, setSrNoStart] = useState<string>('');
   const [srNoEnd, setSrNoEnd] = useState<string>('');
+  const [debouncedSrNoStart, setDebouncedSrNoStart] = useState<string>('');
+  const [debouncedSrNoEnd, setDebouncedSrNoEnd] = useState<string>('');
   
   // Sorting state
   const [sortBy, setSortBy] = useState<string>('sr_no');
@@ -56,9 +58,11 @@ export const MasterDataCenter: React.FC = () => {
   const [selectedLeads, setSelectedLeads] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // AbortController and mount tracking to eliminate race conditions
+  // AbortController for race-free fetch cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
-  const isInitialMount = useRef(true);
+  // Manual debounce timers (avoids cross-effect race conditions)
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const srNoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Upload Modal & Live Progress State
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -109,41 +113,37 @@ export const MasterDataCenter: React.FC = () => {
     email_optin: true,
   });
 
-  // 300ms Debounce on Search Input
+  // 300ms Search Debounce — updates debouncedSearch which triggers the SINGLE main effect
   useEffect(() => {
-    if (isInitialMount.current) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      setDebouncedSearch(search);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      const trimmed = search.trim();
+      setDebouncedSearch(trimmed);
       localStorage.setItem('mdc_search', search);
       setPage(1);
-      fetchLeads(search, 1);
     }, 300);
-    return () => clearTimeout(timer);
+    return () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); };
   }, [search]);
 
-  // Fetch leads on dependency changes (pagination, opt-in filter, channel filter, company, sorting)
+  // 350ms Sr. No Range Debounce — batches srNoStart/End into debounced state
+  useEffect(() => {
+    if (srNoTimerRef.current) clearTimeout(srNoTimerRef.current);
+    srNoTimerRef.current = setTimeout(() => {
+      setDebouncedSrNoStart(srNoStart);
+      setDebouncedSrNoEnd(srNoEnd);
+      setPage(1);
+    }, 350);
+    return () => { if (srNoTimerRef.current) clearTimeout(srNoTimerRef.current); };
+  }, [srNoStart, srNoEnd]);
+
+  // SINGLE consolidated fetch effect — ALL filter dependencies in ONE place, NO race conditions
   useEffect(() => {
     localStorage.setItem('mdc_optin_filter', optinFilter);
     fetchLeads();
     if (isSuperadmin) {
       fetchCompanies();
     }
-  }, [page, limit, optinFilter, channelFilter, selectedCompanyFilter, sortBy, sortDir]);
-
-  // Debounced Sr No Range filter
-  useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      return;
-    }
-    const timer = setTimeout(() => {
-      setPage(1);
-      fetchLeads(undefined, 1);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [srNoStart, srNoEnd]);
+  }, [debouncedSearch, page, limit, optinFilter, channelFilter, selectedCompanyFilter, sortBy, sortDir, debouncedSrNoStart, debouncedSrNoEnd]);
 
   const fetchCompanies = async () => {
     try {
@@ -226,7 +226,7 @@ export const MasterDataCenter: React.FC = () => {
     return () => clearInterval(interval);
   }, [ingestJob?.jobId, ingestJob?.status, setIsWorkingOrProcessing]);
 
-  const fetchLeads = async (searchOverride?: string, pageOverride?: number) => {
+  const fetchLeads = async () => {
     // Cancel previous in-flight request to eliminate race conditions
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -234,21 +234,18 @@ export const MasterDataCenter: React.FC = () => {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    const targetSearch = searchOverride !== undefined ? searchOverride : debouncedSearch;
-    const targetPage = pageOverride !== undefined ? pageOverride : page;
-
     try {
       setIsLoading(true);
       const res = await axios.get('/api/leads', {
         signal: controller.signal,
         params: {
-          page: targetPage,
+          page,
           limit,
-          search: targetSearch.trim() || undefined,
+          search: debouncedSearch || undefined,
           optin_filter: optinFilter !== 'all' ? optinFilter : undefined,
           channel_filter: channelFilter !== 'all' ? channelFilter : undefined,
-          sr_no_start: srNoStart ? parseInt(srNoStart, 10) : undefined,
-          sr_no_end: srNoEnd ? parseInt(srNoEnd, 10) : undefined,
+          sr_no_start: debouncedSrNoStart ? parseInt(debouncedSrNoStart, 10) : undefined,
+          sr_no_end: debouncedSrNoEnd ? parseInt(debouncedSrNoEnd, 10) : undefined,
           company_name: selectedCompanyFilter !== 'all' ? selectedCompanyFilter : undefined,
           sort_by: sortBy,
           sort_dir: sortDir,
@@ -264,6 +261,9 @@ export const MasterDataCenter: React.FC = () => {
         return;
       }
       console.error('Failed to load leads:', err);
+      // Reset state on error so banner never shows stale counts
+      setLeads([]);
+      setTotal(0);
     } finally {
       if (abortControllerRef.current === controller) {
         setIsLoading(false);
@@ -273,30 +273,35 @@ export const MasterDataCenter: React.FC = () => {
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setDebouncedSearch(search);
+    // Clear any pending debounce and apply search immediately
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    const trimmed = search.trim();
+    setDebouncedSearch(trimmed);
     localStorage.setItem('mdc_search', search);
     setPage(1);
-    fetchLeads(search, 1);
   };
 
   const handleClearSearch = () => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     setSearch('');
     setDebouncedSearch('');
     localStorage.removeItem('mdc_search');
     setPage(1);
-    fetchLeads('', 1);
   };
 
   const handleResetAllFilters = () => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    if (srNoTimerRef.current) clearTimeout(srNoTimerRef.current);
     setSearch('');
     setDebouncedSearch('');
     localStorage.removeItem('mdc_search');
     setSrNoStart('');
     setSrNoEnd('');
+    setDebouncedSrNoStart('');
+    setDebouncedSrNoEnd('');
     setChannelFilter('all');
     setOptinFilter('all');
     setPage(1);
-    fetchLeads('', 1);
   };
 
   const handleSort = (column: string) => {
